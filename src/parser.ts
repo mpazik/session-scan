@@ -13,7 +13,7 @@
 
 import { createReadStream } from "fs";
 import { createInterface } from "readline";
-import { readdir, stat } from "fs/promises";
+import { readdir } from "fs/promises";
 import { join } from "path";
 import type {
   SessionHeader,
@@ -269,35 +269,68 @@ const SESSIONS_DIR = join(
   "sessions",
 );
 
+export interface DiscoverOptions {
+  /** Only yield files from directories matching this cwd substring (case-insensitive). */
+  cwdFilter?: string;
+  /** Only yield files with timestamps on or after this date. */
+  since?: Date;
+  /** Only yield files with timestamps on or before this date. */
+  until?: Date;
+}
+
 /**
- * Find all .jsonl session files under the pi sessions directory.
+ * Find .jsonl session files under the pi sessions directory.
+ *
+ * Filters by directory name (cwd) and filename timestamp prefix
+ * so we never open files that can't match.
  */
 export async function* discoverSessionFiles(
   sessionsDir: string = SESSIONS_DIR,
+  opts: DiscoverOptions = {},
 ): AsyncGenerator<string> {
-  let dirs: string[];
+  let dirs: import("fs").Dirent[];
   try {
-    dirs = await readdir(sessionsDir);
+    dirs = await readdir(sessionsDir, { withFileTypes: true });
   } catch {
     return;
   }
 
-  for (const dir of dirs) {
-    const dirPath = join(sessionsDir, dir);
-    const dirStat = await stat(dirPath).catch(() => null);
-    if (!dirStat?.isDirectory()) continue;
+  const cwdPattern = opts.cwdFilter?.toLowerCase();
 
-    let files: string[];
+  // Pre-compute date strings for comparison (ISO dates sort lexicographically)
+  const sinceStr = opts.since?.toISOString().slice(0, 10);
+  const untilStr = opts.until?.toISOString().slice(0, 10);
+
+  for (const entry of dirs) {
+    if (!entry.isDirectory()) continue;
+
+    // cwd filter: match on directory name
+    if (cwdPattern) {
+      const dirLower = entry.name.toLowerCase().replace(/--/g, "/").replace(/-/g, "/");
+      if (!dirLower.includes(cwdPattern)) continue;
+    }
+
+    const dirPath = join(sessionsDir, entry.name);
+
+    let files: import("fs").Dirent[];
     try {
-      files = await readdir(dirPath);
+      files = await readdir(dirPath, { withFileTypes: true });
     } catch {
       continue;
     }
 
     for (const file of files) {
-      if (file.endsWith(".jsonl")) {
-        yield join(dirPath, file);
+      if (!file.isFile() || !file.name.endsWith(".jsonl")) continue;
+
+      // Filename starts with ISO date: 2026-03-13T07-14-20-231Z_...
+      // String comparison works because ISO dates sort lexicographically.
+      if (sinceStr || untilStr) {
+        const dateStr = file.name.slice(0, 10);
+        if (sinceStr && dateStr < sinceStr) continue;
+        if (untilStr && dateStr > untilStr) continue;
       }
+
+      yield join(dirPath, file.name);
     }
   }
 }

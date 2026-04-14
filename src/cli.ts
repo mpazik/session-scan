@@ -116,40 +116,21 @@ const limit = values.limit ? parseInt(values.limit, 10) : Infinity;
 // ---------------------------------------------------------------------------
 
 const allResults: ScanResult[] = [];
-let filesScanned = 0;
-let filesMatched = 0;
-let candidatesCollected = 0;
+let sessionsFound = 0;
 const sessionsWithResults = new Set<string>();
 
 const t0 = performance.now();
 
-for await (const filePath of discoverSessionFiles(sessionsDir)) {
-  filesScanned++;
-
-  let matched = false;
+for await (const filePath of discoverSessionFiles(sessionsDir, opts)) {
+  sessionsFound++;
 
   for await (const candidate of scanner.collect(
-    withContext(streamSession(filePath, opts)),
+    withContext(streamSession(filePath)),
   )) {
-    if (!matched) {
-      matched = true;
-      filesMatched++;
-    }
-    candidatesCollected++;
-
     const results = await scanner.extract(candidate);
     for (const r of results) {
       allResults.push(r);
       sessionsWithResults.add(filePath);
-    }
-  }
-
-  if (!matched) {
-    for await (const event of streamSession(filePath, opts)) {
-      if (event.type === "session_start") {
-        filesMatched++;
-      }
-      break;
     }
   }
 }
@@ -160,15 +141,16 @@ const elapsed = ((performance.now() - t0) / 1000).toFixed(2);
 // Output
 // ---------------------------------------------------------------------------
 
+const resultCount = allResults.length;
+const hitSessions = sessionsWithResults.size;
+
 if (values.json) {
   const output = {
     scanner: scanner.name,
     stats: {
-      filesScanned,
-      filesMatched,
-      candidatesCollected,
-      sessionsWithResults: sessionsWithResults.size,
-      totalResults: allResults.length,
+      sessionsFound,
+      sessionsWithResults: hitSessions,
+      totalResults: resultCount,
       elapsed: `${elapsed}s`,
     },
     results: allResults.slice(0, limit),
@@ -178,10 +160,7 @@ if (values.json) {
 }
 
 console.log(
-  `${scanner.name}: scanned ${filesScanned} files, ${filesMatched} matched, ${elapsed}s`,
-);
-console.log(
-  `Collected ${candidatesCollected} candidates, produced ${allResults.length} results from ${sessionsWithResults.size} sessions`,
+  `${scanner.name}: ${sessionsFound} sessions, ${resultCount} results in ${hitSessions} sessions, ${elapsed}s`,
 );
 console.log();
 

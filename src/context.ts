@@ -26,7 +26,7 @@ export async function* withContext(
 
   let turn: Turn | null = null;
   let prevTurn: Turn | null = null;
-  // Buffer events before the first user message
+  // Mutable buffer for current turn's events. Referenced by turn object directly.
   let turnEvents: SessionEvent[] = [];
 
   for await (const event of events) {
@@ -45,8 +45,6 @@ export async function* withContext(
     }
 
     if (event.type === "session_end") {
-      // Finalize current turn's events before yielding
-      if (turn) turn = { ...turn, events: [...turnEvents] };
       yield { ...event, context: makeContext() } as ContextualEvent;
       continue;
     }
@@ -60,26 +58,25 @@ export async function* withContext(
       model = event.model;
     }
 
-    // Turn boundary: user_message
+    // Turn boundary: user_message starts a new turn
     if (event.type === "user_message") {
-      // Finalize current turn and shift to previous
+      // Freeze previous turn (snapshot the events array)
       if (turn) {
-        prevTurn = { ...turn, events: [...turnEvents] };
+        prevTurn = { userMessage: turn.userMessage, events: turnEvents };
       }
 
-      // Start new turn
-      turn = { userMessage: event, events: [] };
+      // Start new turn with fresh buffer
       turnEvents = [];
+      turn = { userMessage: event, events: turnEvents };
 
       yield { ...event, context: makeContext() } as ContextualEvent;
       continue;
     }
 
-    // All other events: yield with current context (excluding this event),
-    // then add to turn buffer
-    if (turn) turn = { ...turn, events: [...turnEvents] };
-    const ctx = makeContext();
-    yield { ...event, context: ctx } as ContextualEvent;
+    // All other events: yield with current context, then append to buffer.
+    // turn.events is the same reference as turnEvents, so scanners see
+    // events accumulated *before* the current one (not including it).
+    yield { ...event, context: makeContext() } as ContextualEvent;
     turnEvents.push(event);
   }
 

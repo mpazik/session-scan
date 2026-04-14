@@ -41,7 +41,7 @@
 
 // Parser
 export { streamSession, discoverSessionFiles } from "./parser.js";
-export type { StreamOptions } from "./parser.js";
+export type { StreamOptions, DiscoverOptions } from "./parser.js";
 
 // Context enrichment
 export { withContext } from "./context.js";
