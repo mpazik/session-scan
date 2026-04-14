@@ -1,6 +1,8 @@
 # AgentLog
 
-Post-hoc session mining tool for LLM coding agents. Reads existing session logs, runs pluggable extractors, surfaces structured insights. No instrumentation required.
+> **Name candidates**: AgentLog, AgentScan, SessionMiner
+
+Post-hoc session mining tool for LLM coding agents. Reads existing session logs, runs pluggable scanners, surfaces structured insights. No instrumentation required.
 
 ## The problem
 
@@ -71,9 +73,53 @@ agentlog search <query>   # search across sessions
 
 Designed to also work as a Claude Code slash command — same UX as `/insights`, repo-aware signal.
 
+## Development
+
+The pi-mono source lives at `../pi-mono/` and is the primary reference for session format, agent types, and tool definitions.
+
+We're building our own session parser, starting with pi as the first adapter. Pi sessions are append-only JSONL files stored under `~/.pi/agent/sessions/`. Each file starts with a `session` header, followed by typed entries (`message`, `compaction`, `branch_summary`, `model_change`, `thinking_level_change`, `custom`, `custom_message`, `label`, `session_info`). Entries form a tree via `id`/`parentId` fields.
+
+### Rules
+
+**Always stream, single walk.** Session data can be large (22 MB single files, 364 MB total). Never load a full session into memory. The parser (`src/parser.ts`) is an `AsyncGenerator<SessionEvent>` that yields typed events line by line. Consumers (scanners, extractors) compose by wrapping the generator:
+
+```ts
+// Parser streams events from a JSONL file
+for await (const event of streamSession(filePath, opts)) {
+  // event.type: "session_start" | "user_message" | "assistant_message" |
+  //             "tool_result" | "bash_execution" | "compaction" | ...
+}
+
+// Scanner wraps the parser, yields only what it finds
+for await (const result of scanForBinderFailures(streamSession(path, opts))) {
+  if (result.type === "failure") { ... }
+}
+```
+
+The parser internally tracks assistant tool calls so that `tool_result` events include the resolved `command` from the originating `toolCall`. This means consumers never need to buffer or correlate entries themselves.
+
+Filters (date range, cwd pattern) are applied at the header level. If a file doesn't match, the stream closes immediately without reading the rest.
+
+## Prior art
+
+Existing tools in this space, kept here for reference if we want to integrate with other agent harnesses later:
+
+- **[agentprobe](https://github.com/vtemian/agentprobe)** — TypeScript library with providers for Cursor, Claude Code, Codex, OpenCode. Focused on real-time observation/lifecycle events, not batch analysis. The parsing layer could be useful.
+- **[opensession](https://github.com/hwisu/opensession)** — Rust. Defines a canonical "HAIL JSONL" format with parsers for Claude Code, Codex, Cursor, Gemini CLI, OpenCode. Buried inside a large session-sharing platform. Not usable standalone.
+- **[sessionlog](https://github.com/npow/sessionlog)** — Python. Ingests Claude Code, Codex, Cursor, Antigravity sessions into SQLite. More of an ingestion tool than a library.
+
+None of these are well-maintained or popular. We're rolling our own.
+
 ## Status
 
-Early concept. Research and design phase.
+Prototype. Streaming pi session parser and binder failure scanner working.
+
+```bash
+bun src/cli.ts --stats                    # scan all binder sessions
+bun src/cli.ts --since 2026-04-01          # filter by date
+bun src/cli.ts --cwd vision --limit 20     # filter by cwd, limit output
+bun src/cli.ts --json                      # JSON output
+```
 
 ## License
 
