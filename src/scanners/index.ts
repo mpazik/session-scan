@@ -2,7 +2,7 @@
  * Scanner discovery and registry.
  *
  * Built-in scanners are registered on import.
- * User-defined scanners are loaded from ~/.agentlog/scanners/*.ts
+ * User-defined scanners are loaded from ~/.session-scan/scanners/*.ts
  * User files override built-ins by name.
  */
 
@@ -37,7 +37,7 @@ export function list(): Scanner[] {
 
 const USER_DIR = join(
   process.env.HOME || "~",
-  ".agentlog",
+  ".session-scan",
   "scanners",
 );
 

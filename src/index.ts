@@ -1,10 +1,10 @@
 /**
- * agentlog - session mining for pi coding agent
+ * session-scan - session mining for pi coding agent
  *
  * Writing a scanner:
  *
- *   // ~/.agentlog/scanners/my-scanner.ts
- *   import type { Scanner } from "agentlog";
+ *   // ~/.session-scan/scanners/my-scanner.ts
+ *   import type { Scanner } from "session-scan";
  *
  *   export const scanner: Scanner = {
  *     name: "my-scanner",
@@ -39,9 +39,24 @@
  *   };
  */
 
-// Parser
-export { streamSession, discoverSessionFiles } from "./parser.js";
-export type { StreamOptions, DiscoverOptions } from "./parser.js";
+// Parser framework + pluggable adapters
+export {
+  streamSession,
+  discoverSessions,
+  detectSource,
+  register as registerAdapter,
+  get as getAdapter,
+  list as listAdapters,
+  discover as discoverAdapters,
+  loadAdapterFile,
+  normalizeToolName,
+} from "./parser/index.js";
+export type {
+  SessionSource,
+  StreamOptions,
+  DiscoverOptions,
+  FindSessionContext,
+} from "./parser/index.js";
 
 // Context enrichment
 export { withContext } from "./context.js";
@@ -59,6 +74,8 @@ export type {
   SessionStartEvent,
   UserMessageEvent,
   AssistantMessageEvent,
+  ThinkingEvent,
+  ErrorEvent,
   ToolResultEvent,
   BashExecutionEvent,
   CompactionEvent,
@@ -76,7 +93,10 @@ export type {
   MessageSlice,
   ScanResult,
   // Low-level
+  AgentType,
+  NormalizedToolName,
   SessionHeader,
+  TokenUsage,
   ToolCall,
   TextContent,
   ContentBlock,

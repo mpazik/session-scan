@@ -2,8 +2,25 @@
  * Pi session JSONL types and scanner framework.
  *
  * Mirrors the format defined in packages/coding-agent/src/core/session-manager.ts
- * but kept standalone so agentlog has no dependency on pi-mono.
+ * but kept standalone so session-scan has no dependency on pi-mono.
  */
+
+// -- Harness identity --------------------------------------------------------
+
+export type AgentType = "pi" | "claude-code" | "codex";
+
+/** Canonical tool names, harness-neutral. Falls back to the native name. */
+export type NormalizedToolName =
+  | "terminal"
+  | "file_read"
+  | "file_edit"
+  | "file_write"
+  | "file_search"
+  | "content_search"
+  | "web_search"
+  | "web_fetch"
+  | "sub_agent"
+  | (string & {});
 
 // -- Content blocks ----------------------------------------------------------
 
@@ -24,7 +41,10 @@ export type ContentBlock = TextContent | ImageContent;
 export interface ToolCall {
   type: "toolCall";
   id: string;
+  /** Native tool name (pi: "bash", claude: "Bash", codex: "exec_command"). */
   name: string;
+  /** Harness-neutral name. Scanners can match on this to stay agnostic. */
+  normalizedName: NormalizedToolName;
   arguments: Record<string, unknown>;
 }
 
@@ -32,10 +52,16 @@ export interface ToolCall {
 
 export interface SessionHeader {
   type: "session";
+  /** Which harness produced this session. */
+  agent: AgentType;
   version?: number;
   id: string;
   timestamp: string;
   cwd: string;
+  /** Active model at session start (claude/codex carry it on init). */
+  model?: string;
+  /** Git context at session start (claude/codex expose this). */
+  git?: { branch?: string; commit?: string; remote?: string };
   parentSession?: string;
 }
 
@@ -53,12 +79,14 @@ export type SessionEvent =
   | SessionStartEvent
   | UserMessageEvent
   | AssistantMessageEvent
+  | ThinkingEvent
   | ToolResultEvent
   | BashExecutionEvent
   | CompactionEvent
   | ModelChangeEvent
   | ThinkingLevelChangeEvent
   | CustomMessageEvent
+  | ErrorEvent
   | SessionEndEvent;
 
 export interface SessionStartEvent {
@@ -85,6 +113,34 @@ export interface AssistantMessageEvent {
   model: string;
   stopReason?: string;
   errorMessage?: string;
+  /** Token usage, when the harness reports it (claude/codex). Pi leaves undefined. */
+  usage?: TokenUsage;
+  timestamp: string;
+}
+
+export interface TokenUsage {
+  inputTokens?: number;
+  outputTokens?: number;
+  cachedInputTokens?: number;
+}
+
+/** Reasoning/thinking block (claude `thinking`, codex `reasoning`). Pi: none. */
+export interface ThinkingEvent {
+  type: "thinking";
+  id: string;
+  parentId: string | null;
+  summary: string;
+  text: string | null;
+  timestamp: string;
+}
+
+/** Harness-level error (claude api_error, codex turn_aborted). */
+export interface ErrorEvent {
+  type: "error";
+  id: string;
+  parentId: string | null;
+  code?: string;
+  message: string;
   timestamp: string;
 }
 
@@ -250,7 +306,7 @@ export interface ScanResult<T = unknown> {
  *
  * Files:
  *   Built-in:  src/scanners/<name>.ts
- *   User:      ~/.agentlog/scanners/<name>.ts
+ *   User:      ~/.session-scan/scanners/<name>.ts
  */
 export interface Scanner<T = unknown> {
   name: string;

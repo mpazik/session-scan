@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 /**
- * agentlog - mine pi sessions with pluggable scanners
+ * session-scan - mine pi sessions with pluggable scanners
  *
  * Usage:
  *   bun src/cli.ts <scanner> [options]
@@ -14,22 +14,34 @@
  *   --limit <n>         Max results to display (default: all)
  *   --json              Output as JSON
  *   --stats             Show summary stats only
- *   --sessions-dir <p>  Override sessions directory
+ *   --source <name>     Restrict to one adapter (pi | claude-code | codex)
+ *   --adapter <path>    Load an extra adapter file (repeatable)
+ *   --sessions-dir <p>  Override an adapter's storage directory
  *
  * Scanners:
  *   Built-in:  src/scanners/*.ts
- *   User:      ~/.agentlog/scanners/*.ts  (export { scanner } or default)
+ *   User:      ~/.session-scan/scanners/*.ts  (export { scanner } or default)
+ *
+ * Adapters (pluggable session parsers):
+ *   Built-in:  src/adapters/*.ts            (codex, claude-code)
+ *   User:      ~/.session-scan/adapters/*.ts  (export { source } or default)
+ *   Example:   examples/adapters/pi.ts      (pi is not built in)
  *
  * Examples:
  *   bun src/cli.ts binder-failures --stats           # current repo, last 7 days
  *   bun src/cli.ts binder-failures --cwd binder      # all binder sessions, last 7 days
  *   bun src/cli.ts binder-failures --cwd all --since 2026-01-01
+ *   bun src/cli.ts binder-failures --adapter examples/adapters/pi.ts --source pi
  *   bun src/cli.ts list
  */
 
 import { parseArgs } from "util";
-import { join, basename } from "path";
-import { discoverSessionFiles, streamSession } from "./parser.js";
+import { basename } from "path";
+import {
+  streamSession,
+  discoverSessions,
+  discover as discoverAdapters,
+} from "./parser/index.js";
 import { withContext } from "./context.js";
 import * as registry from "./scanners/index.js";
 import type { ScanResult } from "./types.js";
@@ -54,7 +66,7 @@ if (!scannerName || scannerName === "list") {
     console.log(`  ${s.name.padEnd(24)} ${s.description}`);
   }
   console.log();
-  console.log("User scanners: ~/.agentlog/scanners/*.ts");
+  console.log("User scanners: ~/.session-scan/scanners/*.ts");
   process.exit(0);
 }
 
@@ -77,13 +89,15 @@ const { values } = parseArgs({
     json: { type: "boolean", default: false },
     stats: { type: "boolean", default: false },
     "sessions-dir": { type: "string" },
+    source: { type: "string" },
+    adapter: { type: "string", multiple: true },
   },
   strict: true,
 });
 
-const sessionsDir =
-  values["sessions-dir"] ??
-  join(process.env.HOME || "~", ".pi", "agent", "sessions");
+// Load pluggable adapters: built-in (src/adapters), user
+// (~/.session-scan/adapters), and any passed via --adapter <path>.
+await discoverAdapters({ extra: values.adapter ?? [] });
 
 // Default --cwd: derive repo name from current directory
 function defaultCwd(): string | undefined {
@@ -107,6 +121,8 @@ const opts = {
   cwdFilter: defaultCwd(),
   since: defaultSince(),
   until: values.until ? new Date(values.until) : undefined,
+  source: values.source,
+  sessionsDir: values["sessions-dir"],
 };
 
 const limit = values.limit ? parseInt(values.limit, 10) : Infinity;
@@ -121,11 +137,11 @@ const sessionsWithResults = new Set<string>();
 
 const t0 = performance.now();
 
-for await (const filePath of discoverSessionFiles(sessionsDir, opts)) {
+for await (const filePath of discoverSessions(opts)) {
   sessionsFound++;
 
   for await (const candidate of scanner.collect(
-    withContext(streamSession(filePath)),
+    withContext(streamSession(filePath, { source: values.source })),
   )) {
     const results = await scanner.extract(candidate);
     for (const r of results) {

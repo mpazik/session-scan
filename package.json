@@ -1,5 +1,5 @@
 {
-  "name": "agentlog",
+  "name": "session-scan",
   "module": "index.ts",
   "type": "module",
   "private": true,
