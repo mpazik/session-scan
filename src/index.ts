@@ -67,37 +67,30 @@ export { frustrationScore, truncate, truncLine, stripAnsi } from "./utils.js";
 // Scanner registry
 export { discover, register, get, list } from "./scanners/index.js";
 
-// Types
+// Session model
 export type {
-  // Events
   SessionEvent,
   SessionStartEvent,
   UserMessageEvent,
   AssistantMessageEvent,
-  ThinkingEvent,
-  ErrorEvent,
   ToolResultEvent,
-  BashExecutionEvent,
   CompactionEvent,
-  ModelChangeEvent,
-  ThinkingLevelChangeEvent,
+  ErrorEvent,
   CustomMessageEvent,
-  SessionEndEvent,
-  // Context
+  Thinking,
+  ToolCall,
+  TokenUsage,
+  SessionMetadata,
+  NormalizedToolName,
+} from "./session.js";
+
+// Scanner framework
+export type {
   Turn,
   EventContext,
   ContextualEvent,
-  // Scanner framework
   Scanner,
   Candidate,
   MessageSlice,
   ScanResult,
-  // Low-level
-  AgentType,
-  NormalizedToolName,
-  SessionHeader,
-  TokenUsage,
-  ToolCall,
-  TextContent,
-  ContentBlock,
-} from "./types.js";
+} from "./scanner.js";

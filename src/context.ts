@@ -4,16 +4,11 @@
  * Wraps a raw SessionEvent stream and yields ContextualEvents with:
  * - Current turn (user message + events since)
  * - Previous turn
- * - Current model and thinking level
+ * - Current model
  */
 
-import type {
-  SessionEvent,
-  ContextualEvent,
-  EventContext,
-  Turn,
-  UserMessageEvent,
-} from "./types.js";
+import type { SessionEvent } from "./session.js";
+import type { ContextualEvent, EventContext, Turn } from "./scanner.js";
 
 export async function* withContext(
   events: AsyncGenerator<SessionEvent>,
@@ -22,7 +17,6 @@ export async function* withContext(
   let cwd = "";
   let sessionTimestamp = "";
   let model = "";
-  let thinkingLevel = "";
 
   let turn: Turn | null = null;
   let prevTurn: Turn | null = null;
@@ -31,11 +25,10 @@ export async function* withContext(
 
   for await (const event of events) {
     if (event.type === "session_start") {
-      sessionPath = event.path;
-      cwd = event.header.cwd;
-      sessionTimestamp = event.header.timestamp;
-      model = "";
-      thinkingLevel = "";
+      sessionPath = event.path ?? "";
+      cwd = event.cwd;
+      sessionTimestamp = event.timestamp;
+      model = event.model ?? "";
       turn = null;
       prevTurn = null;
       turnEvents = [];
@@ -44,17 +37,8 @@ export async function* withContext(
       continue;
     }
 
-    if (event.type === "session_end") {
-      yield { ...event, context: makeContext() } as ContextualEvent;
-      continue;
-    }
-
-    // Track model and thinking level
-    if (event.type === "model_change") {
-      model = event.modelId;
-    } else if (event.type === "thinking_level_change") {
-      thinkingLevel = event.thinkingLevel;
-    } else if (event.type === "assistant_message" && event.model) {
+    // Track the active model from each assistant response.
+    if (event.type === "assistant_message" && event.model) {
       model = event.model;
     }
 
@@ -85,7 +69,6 @@ export async function* withContext(
       turn,
       prevTurn,
       model,
-      thinkingLevel,
       sessionPath,
       cwd,
       sessionTimestamp,

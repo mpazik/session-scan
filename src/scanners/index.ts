@@ -8,7 +8,7 @@
 
 import { readdir } from "fs/promises";
 import { join } from "path";
-import type { Scanner } from "../types.js";
+import type { Scanner } from "../scanner.js";
 
 // Built-ins
 import { scanner as binderFailures } from "./binder-failures.js";

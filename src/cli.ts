@@ -44,7 +44,7 @@ import {
 } from "./parser/index.js";
 import { withContext } from "./context.js";
 import * as registry from "./scanners/index.js";
-import type { ScanResult } from "./types.js";
+import type { ScanResult } from "./scanner.js";
 
 // ---------------------------------------------------------------------------
 // Discover scanners (built-in + user-defined)

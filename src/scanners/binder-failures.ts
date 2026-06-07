@@ -1,18 +1,19 @@
 /**
  * Scanner: binder CLI failures.
  *
- * Collects tool results and bash executions where binder commands failed.
+ * Collects failed tool results where binder commands errored. Bash runs are
+ * just tool results (`normalizedName: "terminal"`) with a non-zero exit, so a
+ * single tool_result branch covers shell and structured tools alike. The
+ * command that produced a result is recovered from the originating tool call.
  * No LLM needed -- extract just reshapes the candidate metadata.
  */
 
 import type {
   Scanner,
-  Candidate,
-  ScanResult,
   MessageSlice,
   ContextualEvent,
-  SessionEvent,
-} from "../types.js";
+} from "../scanner.js";
+import type { SessionEvent, ToolCall } from "../session.js";
 
 // ---------------------------------------------------------------------------
 // Data shape
@@ -64,12 +65,42 @@ function truncate(text: string, maxLen = 300): string {
 }
 
 // ---------------------------------------------------------------------------
+// Tool-call correlation
+// ---------------------------------------------------------------------------
+
+/** Find the tool call that produced a result, within the turn's events. */
+function toolCallFor(
+  toolCallId: string,
+  turnEvents: SessionEvent[],
+): ToolCall | undefined {
+  for (const e of turnEvents) {
+    if (e.type !== "assistant_message") continue;
+    for (const call of e.toolCalls) {
+      if (call.id === toolCallId) return call;
+    }
+  }
+  return undefined;
+}
+
+/** Pull a shell command string out of a tool call's arguments, when present. */
+function commandOf(call: ToolCall | undefined): string | undefined {
+  if (!call) return undefined;
+  const c = call.arguments.command ?? call.arguments.cmd;
+  if (typeof c === "string") return c;
+  if (Array.isArray(c)) {
+    return c.filter((x) => typeof x === "string").join(" ") || undefined;
+  }
+  return undefined;
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
 function buildMessages(event: ContextualEvent): MessageSlice[] {
   const slices: MessageSlice[] = [];
   const turn = event.context.turn;
+  const turnEvents = turn?.events ?? [];
 
   if (turn) {
     slices.push({
@@ -79,18 +110,21 @@ function buildMessages(event: ContextualEvent): MessageSlice[] {
     });
 
     for (const e of turn.events) {
-      const s = eventToSlice(e);
+      const s = eventToSlice(e, turnEvents);
       if (s) slices.push(s);
     }
   }
 
-  const self = eventToSlice(event);
+  const self = eventToSlice(event, turnEvents);
   if (self) slices.push(self);
 
   return slices;
 }
 
-function eventToSlice(e: SessionEvent): MessageSlice | null {
+function eventToSlice(
+  e: SessionEvent,
+  turnEvents: SessionEvent[],
+): MessageSlice | null {
   switch (e.type) {
     case "assistant_message":
       return {
@@ -105,14 +139,7 @@ function eventToSlice(e: SessionEvent): MessageSlice | null {
         text: truncate(e.content, 500),
         timestamp: e.timestamp,
         isError: e.isError,
-        command: e.command,
-      };
-    case "bash_execution":
-      return {
-        role: "bash",
-        text: truncate(e.output, 500),
-        timestamp: e.timestamp,
-        command: e.command,
+        command: commandOf(toolCallFor(e.toolCallId, turnEvents)),
       };
     default:
       return null;
@@ -125,89 +152,60 @@ function eventToSlice(e: SessionEvent): MessageSlice | null {
 
 export const scanner: Scanner<BinderFailureData> = {
   name: "binder-failures",
-  description: "Find binder CLI errors in tool results and bash executions",
+  description: "Find binder CLI errors in failed tool results",
 
   async *collect(events) {
     for await (const event of events) {
-      // Tool result errors
-      if (event.type === "tool_result" && event.isError) {
-        const commandMatch = event.command ? hasBinder(event.command) : false;
-        const outputMatch = hasBinder(event.content);
-        if (!commandMatch && !outputMatch) continue;
+      if (event.type !== "tool_result" || !event.isError) continue;
 
-        const isTest =
-          (event.command?.includes("bun test") ||
-            event.command?.includes("vitest") ||
-            event.content.includes("bun test")) ??
-          false;
+      const turnEvents = event.context.turn?.events ?? [];
+      const call = toolCallFor(event.toolCallId, turnEvents);
+      const command = commandOf(call);
 
-        const turnEvents = event.context.turn?.events ?? [];
-        const priorErrorsInTurn = turnEvents.filter(
-          (e) => e.type === "tool_result" && e.isError,
-        ).length;
+      const commandMatch = command ? hasBinder(command) : false;
+      const outputMatch = hasBinder(event.content);
+      if (!commandMatch && !outputMatch) continue;
 
-        yield {
-          id: `${event.context.sessionPath}:${event.id}`,
-          sessionPath: event.context.sessionPath,
-          cwd: event.context.cwd,
-          timestamp: event.timestamp,
-          messages: buildMessages(event),
-          meta: {
-            entryId: event.id,
-            kind: isTest ? "test_failure" : "tool_error",
-            command: event.command,
-            toolName: event.toolName,
-            errorText: truncate(event.content),
-            userPrompt: event.context.turn?.userMessage.text
-              ? truncate(event.context.turn.userMessage.text, 200)
-              : undefined,
-            priorErrorsInTurn,
-            summary: truncate(
-              event.content.split("\n").find((l) => l.trim()) ?? "unknown",
-              120,
-            ),
-          },
-        };
-        continue;
-      }
+      const isTest =
+        command?.includes("bun test") ||
+        command?.includes("vitest") ||
+        event.content.includes("bun test") ||
+        false;
+      const isBash =
+        call?.normalizedName === "terminal" || event.exitCode != null;
+      const kind = isTest ? "test_failure" : isBash ? "bash_error" : "tool_error";
 
-      // Bash execution errors
-      if (event.type === "bash_execution") {
-        if (event.exitCode === 0 || event.exitCode === undefined) continue;
-        if (!hasBinder(event.command) && !hasBinder(event.output)) continue;
+      const priorErrorsInTurn = turnEvents.filter(
+        (e) => e.type === "tool_result" && e.isError,
+      ).length;
 
-        const turnEvents2 = event.context.turn?.events ?? [];
-        const priorErrorsInTurn = turnEvents2.filter(
-          (e) => e.type === "tool_result" && e.isError,
-        ).length;
-
-        yield {
-          id: `${event.context.sessionPath}:${event.id}`,
-          sessionPath: event.context.sessionPath,
-          cwd: event.context.cwd,
-          timestamp: event.timestamp,
-          messages: buildMessages(event),
-          meta: {
-            entryId: event.id,
-            kind: "bash_error",
-            command: event.command,
-            errorText: truncate(event.output),
-            userPrompt: event.context.turn?.userMessage.text
-              ? truncate(event.context.turn.userMessage.text, 200)
-              : undefined,
-            priorErrorsInTurn,
-            summary: truncate(
-              event.output.split("\n").find((l) => l.trim()) ?? "unknown",
-              120,
-            ),
-          },
-        };
-      }
+      yield {
+        id: `${event.context.sessionPath}:${event.id}`,
+        sessionPath: event.context.sessionPath,
+        cwd: event.context.cwd,
+        timestamp: event.timestamp,
+        messages: buildMessages(event),
+        meta: {
+          entryId: event.id,
+          kind,
+          command,
+          toolName: event.toolName,
+          errorText: truncate(event.content),
+          userPrompt: event.context.turn?.userMessage.text
+            ? truncate(event.context.turn.userMessage.text, 200)
+            : undefined,
+          priorErrorsInTurn,
+          summary: truncate(
+            event.content.split("\n").find((l) => l.trim()) ?? "unknown",
+            120,
+          ),
+        },
+      };
     }
   },
 
   async extract(candidate) {
-    const m = candidate.meta as BinderFailureData & {
+    const m = candidate.meta as unknown as BinderFailureData & {
       entryId: string;
       summary: string;
     };

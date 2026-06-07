@@ -10,7 +10,7 @@
  * command arguments because codex routes everything through two generic tools.
  */
 
-import type { AgentType, NormalizedToolName } from "../types.js";
+import type { NormalizedToolName } from "../session.js";
 
 const CLAUDE_MAP: Record<string, NormalizedToolName> = {
   Bash: "terminal",
@@ -52,7 +52,7 @@ function classifyExecCommand(cmd: string): NormalizedToolName {
  */
 export function normalizeToolName(
   tool: string,
-  agent: AgentType,
+  agent: string,
   input?: Record<string, unknown>,
 ): NormalizedToolName {
   if (agent === "pi") {
