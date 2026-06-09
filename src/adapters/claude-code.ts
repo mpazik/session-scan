@@ -1,8 +1,9 @@
 /**
  * Claude Code adapter. Parses `~/.claude/projects/<slug>/<id>.jsonl`. No header
  * line, so the session_start is synthesized from the first entry carrying a
- * cwd. An assistant entry's content array already holds thinking + text +
- * tool_use blocks, so it maps onto one `assistant_message` directly (no
+ * cwd; that entry has no model, so session_start.model is backfilled from the
+ * first assistant. An assistant entry's content array already holds thinking +
+ * text + tool_use blocks, so it maps onto one `assistant_message` directly (no
  * cross-entry coalescing needed). Tool results arrive inside the *next* user
  * entry as `tool_result` blocks keyed by tool_use_id. Machinery lines
  * (attachments, modes, snapshots, sidechains, meta) are dropped.
@@ -11,7 +12,7 @@
 import { readdir, stat } from "fs/promises";
 import { join } from "path";
 import { homedir } from "os";
-import type { SessionEvent, SessionMetadata, ToolCall, Thinking, TokenUsage } from "../session.js";
+import type { SessionEvent, SessionStartEvent, SessionMetadata, ToolCall, Thinking, TokenUsage } from "../session.js";
 import { FORMAT_VERSION } from "../session.js";
 import type { Adapter } from "../parser/adapter.js";
 import { normalizeToolName } from "../parser/tool-names.js";
@@ -29,6 +30,10 @@ export default {
     let headerSeen = false;
     let counter = 0;
     let lastTs = "";
+    // session_start is held until the first assistant_message so its model can
+    // be backfilled (claude records the model only on assistant entries).
+    let start: SessionStartEvent | null = null;
+    const events: SessionEvent[] = [];
 
     for await (const value of readJsonValues(filePath)) {
       const raw = value as any;
@@ -54,15 +59,15 @@ export default {
           git: raw.gitBranch ? { branch: raw.gitBranch } : undefined,
         };
         headerSeen = true;
-        yield { type: "session_start", formatVersion: FORMAT_VERSION, path: filePath, ...header };
+        start = { type: "session_start", formatVersion: FORMAT_VERSION, path: filePath, ...header };
       }
 
       if (raw.type === "system") {
         if (raw.subtype === "compact_boundary") {
-          yield { type: "compaction", id, parentId, timestamp: ts };
+          events.push({ type: "compaction", id, parentId, timestamp: ts });
         } else if (raw.subtype === "api_error") {
           const err = raw.error ?? {};
-          yield {
+          events.push({
             type: "error",
             id,
             parentId,
@@ -72,7 +77,7 @@ export default {
             retryAttempt: typeof raw.retryAttempt === "number" ? raw.retryAttempt : undefined,
             maxRetries: typeof raw.maxRetries === "number" ? raw.maxRetries : undefined,
             timestamp: ts,
-          };
+          });
         }
         continue;
       }
@@ -84,13 +89,13 @@ export default {
           for (const b of content) {
             if (b?.type === "tool_result") {
               const callId = String(b.tool_use_id ?? "");
-              yield { type: "tool_result", id: `${id}:${callId}`, parentId, toolCallId: callId, toolName: toolNames.get(callId) ?? "", content: blockText(b.content), isError: b.is_error === true, timestamp: ts };
+              events.push({ type: "tool_result", id: `${id}:${callId}`, parentId, toolCallId: callId, toolName: toolNames.get(callId) ?? "", content: blockText(b.content), isError: b.is_error === true, timestamp: ts });
             }
           }
           const text = arrayText(content);
-          if (text && !isNoise(text)) yield { type: "user_message", id, parentId, text, timestamp: ts };
+          if (text && !isNoise(text)) events.push({ type: "user_message", id, parentId, text, timestamp: ts });
         } else if (typeof content === "string" && content && !isNoise(content)) {
-          yield { type: "user_message", id, parentId, text: content, timestamp: ts };
+          events.push({ type: "user_message", id, parentId, text: content, timestamp: ts });
         }
         continue;
       }
@@ -117,7 +122,7 @@ export default {
         const text = textParts.join("\n");
         if (text || toolCalls.length > 0 || thinkingParts.length > 0) {
           const thinking: Thinking | undefined = thinkingParts.length ? { text: thinkingParts.join("\n") } : undefined;
-          yield {
+          events.push({
             type: "assistant_message",
             id,
             parentId,
@@ -129,7 +134,7 @@ export default {
             stopReason: raw.message?.stop_reason ?? undefined,
             usage: extractUsage(raw.message?.usage),
             timestamp: ts,
-          };
+          });
         }
         continue;
       }
@@ -137,12 +142,22 @@ export default {
       if (raw.type === "attachment") {
         const att = raw.attachment;
         if (att?.type === "queued_command" && typeof att.prompt === "string" && att.prompt && !isNoise(att.prompt)) {
-          yield { type: "user_message", id, parentId, text: att.prompt, timestamp: ts };
+          events.push({ type: "user_message", id, parentId, text: att.prompt, timestamp: ts });
         }
       }
       // ai-title, mode, permission-mode, file-history-snapshot, turn_duration: skip.
     }
 
+    if (!start) return;
+    if (!start.model) {
+      const first = events.find(
+        (e): e is Extract<SessionEvent, { type: "assistant_message" }> =>
+          e.type === "assistant_message" && !!e.model,
+      );
+      if (first) start.model = first.model;
+    }
+    yield start;
+    yield* events;
   },
 
   async detect(filePath) {

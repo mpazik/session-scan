@@ -1,7 +1,7 @@
 /**
  * Adapter registry.
  *
- * Adapters are pluggable. Each is a module that exports a `SessionSource` (as
+ * Adapters are pluggable. Each is a module that exports an `Adapter` (as
  * `source` or default). They load from three places:
  *
  *   Built-in:  src/adapters/*.ts        (ship with the package: codex, claude)
@@ -14,9 +14,9 @@
 
 import { readdir } from "fs/promises";
 import { join, isAbsolute, resolve } from "path";
-import type { SessionSource } from "./source.js";
+import type { Adapter } from "./adapter.js";
 
-const registry = new Map<string, SessionSource>();
+const registry = new Map<string, Adapter>();
 let discovered = false;
 
 const BUILTIN_DIR = join(import.meta.dir, "..", "adapters");
@@ -26,26 +26,26 @@ const USER_DIR = join(process.env.HOME || "~", ".session-scan", "adapters");
 // Registry
 // ---------------------------------------------------------------------------
 
-export function register(s: SessionSource): void {
+export function register(s: Adapter): void {
   registry.set(s.name, s);
 }
 
-export function get(name: string): SessionSource | undefined {
+export function get(name: string): Adapter | undefined {
   return registry.get(name);
 }
 
-export function list(): SessionSource[] {
+export function list(): Adapter[] {
   return [...registry.values()];
 }
 
-function isSource(s: unknown): s is SessionSource {
+function isAdapter(s: unknown): s is Adapter {
   return (
     !!s &&
     typeof s === "object" &&
-    typeof (s as SessionSource).name === "string" &&
-    typeof (s as SessionSource).parse === "function" &&
-    typeof (s as SessionSource).detect === "function" &&
-    typeof (s as SessionSource).discover === "function"
+    typeof (s as Adapter).name === "string" &&
+    typeof (s as Adapter).parse === "function" &&
+    typeof (s as Adapter).detect === "function" &&
+    typeof (s as Adapter).discover === "function"
   );
 }
 
@@ -56,19 +56,19 @@ function isSource(s: unknown): s is SessionSource {
 /** Import one adapter module and register it. Returns the source or null. */
 export async function loadAdapterFile(
   path: string,
-): Promise<SessionSource | null> {
+): Promise<Adapter | null> {
   // Resolve relative paths against the cwd (where the user ran the CLI), not
   // against this module. Built-in/user dirs already pass absolute paths.
   const resolved = isAbsolute(path) ? path : resolve(process.cwd(), path);
   try {
     const mod = await import(resolved);
-    const s: unknown = mod.source ?? mod.default;
-    if (isSource(s)) {
+    const s: unknown = mod.default ?? mod.source;
+    if (isAdapter(s)) {
       register(s);
       return s;
     }
     console.error(
-      `Warning: ${path} does not export a valid SessionSource (need: source or default with name, parse, detect, discover)`,
+      `Warning: ${path} does not export a valid Adapter (default export with name, parse, detect, discover)`,
     );
   } catch (err) {
     console.error(`Warning: failed to load adapter ${resolved}: ${err}`);
@@ -111,7 +111,7 @@ export async function discover(opts: { extra?: string[] } = {}): Promise<void> {
 /** Identify which adapter produced a file by trying each registered detect(). */
 export async function detectSource(
   filePath: string,
-): Promise<SessionSource | null> {
+): Promise<Adapter | null> {
   await discover();
   for (const source of list()) {
     if (await source.detect(filePath)) return source;

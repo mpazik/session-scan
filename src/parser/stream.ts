@@ -6,8 +6,8 @@
  * registered adapter.
  */
 
-import type { SessionEvent } from "../types.js";
-import type { StreamOptions, DiscoverOptions } from "./source.js";
+import type { SessionEvent } from "../session.js";
+import type { StreamOptions, DiscoverOptions } from "./adapter.js";
 import { get, list, detectSource, discover } from "./registry.js";
 
 /**

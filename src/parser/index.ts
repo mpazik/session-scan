@@ -5,11 +5,11 @@
  */
 
 export type {
-  SessionSource,
+  Adapter,
   StreamOptions,
   DiscoverOptions,
   FindSessionContext,
-} from "./source.js";
+} from "./adapter.js";
 
 export {
   register,

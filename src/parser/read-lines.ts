@@ -6,7 +6,46 @@
  */
 
 import { open } from "fs/promises";
+import { createReadStream } from "fs";
 import { createInterface } from "readline";
+
+/**
+ * Stream every top-level JSON value from a file. Tolerant of both one-value-
+ * per-line JSONL (the native harness format) and pretty-printed concatenated
+ * JSON: lines are accumulated into a buffer until they parse, then flushed.
+ */
+export async function* readJsonValues(
+  filePath: string,
+): AsyncGenerator<unknown> {
+  const rl = createInterface({
+    input: createReadStream(filePath, { encoding: "utf8" }),
+    crlfDelay: Infinity,
+  });
+  let buf = "";
+  try {
+    for await (const line of rl) {
+      if (!buf && !line.trim()) continue;
+      buf += line + "\n";
+      try {
+        const value = JSON.parse(buf);
+        yield value;
+        buf = "";
+      } catch {
+        // incomplete value: keep accumulating lines
+      }
+    }
+  } finally {
+    rl.close();
+  }
+}
+
+/** First complete JSON value in a file, or null. Tolerant of pretty-print. */
+export async function readFirstJsonValue(
+  filePath: string,
+): Promise<unknown> {
+  for await (const value of readJsonValues(filePath)) return value;
+  return null;
+}
 
 /** Read just the first non-empty line of a file. */
 export async function readFirstLine(filePath: string): Promise<string | null> {
