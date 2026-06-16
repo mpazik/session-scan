@@ -9,14 +9,13 @@
  * (attachments, modes, snapshots, sidechains, meta) are dropped.
  */
 
-import { readdir, stat } from "fs/promises";
 import { join } from "path";
 import { homedir } from "os";
 import type { SessionEvent, SessionStartEvent, SessionMetadata, ToolCall, Thinking, TokenUsage } from "../session.js";
 import { FORMAT_VERSION } from "../session.js";
 import type { Adapter } from "../parser/adapter.js";
-import { normalizeToolName } from "../parser/tool-names.js";
-import { readJsonValues, readFirstJsonValue } from "../parser/read-lines.js";
+import { readJsonValues } from "../parser/read-lines.js";
+import { joinTextBlocks } from "../parser/content.js";
 
 const PROJECTS_DIR = join(homedir(), ".claude", "projects");
 
@@ -25,49 +24,72 @@ export default {
   storageDir: (opts) =>
     opts?.cwd ? join(PROJECTS_DIR, opts.cwd.replace(/\//g, "-")) : PROJECTS_DIR,
 
-  async *parse(filePath, opts = {}) {
-    const toolNames = new Map<string, string>(); // tool_use_id -> tool name
+  toolNames: {
+    Bash: "terminal",
+    Read: "file_read",
+    Edit: "file_edit",
+    Write: "file_write",
+    Glob: "file_search",
+    Grep: "content_search",
+    WebSearch: "web_search",
+    WebFetch: "web_fetch",
+    Agent: "sub_agent",
+    Task: "sub_agent",
+  },
+
+  async *parse(filePath) {
+    const callNames = new Map<string, string>(); // tool_use_id -> tool name
     let headerSeen = false;
     let counter = 0;
-    let lastTs = "";
-    // session_start is held until the first assistant_message so its model can
-    // be backfilled (claude records the model only on assistant entries).
+    // session_start must be yielded first, but claude records the model only on
+    // assistant entries, so start (and any preamble before the first assistant)
+    // is held until the model is known. Only the preamble buffers, never the
+    // whole session.
     let start: SessionStartEvent | null = null;
-    const events: SessionEvent[] = [];
+    const held: SessionEvent[] = [];
+    function* flushStart(): Generator<SessionEvent> {
+      if (!start) return;
+      const s = start;
+      start = null;
+      yield s;
+      while (held.length) yield held.shift()!;
+    }
+    // Buffer while start is still pending (or before the header appears);
+    // stream directly once start has flushed.
+    function* emit(ev: SessionEvent): Generator<SessionEvent> {
+      if (!headerSeen || start) held.push(ev);
+      else yield ev;
+    }
 
     for await (const value of readJsonValues(filePath)) {
       const raw = value as any;
       if (raw.isSidechain === true) continue;
 
       const ts: string = raw.timestamp ?? "";
-      if (ts) lastTs = ts;
       const id: string = raw.uuid ?? `e${counter++}`;
       const parentId: string | null = raw.parentUuid ?? null;
 
       // Header: first line carrying a cwd (early machinery lines lack it).
       if (!headerSeen && typeof raw.cwd === "string" && raw.cwd) {
-        const cwd = raw.cwd;
-        if (opts.cwdFilter && !cwd.toLowerCase().includes(opts.cwdFilter.toLowerCase())) return;
-        if (ts && opts.since && new Date(ts) < opts.since) return;
-        if (ts && opts.until && new Date(ts) > opts.until) return;
         const header: SessionMetadata = {
           agent: "claude-code",
           id: raw.sessionId ?? "",
           timestamp: ts,
-          cwd,
+          cwd: raw.cwd,
           model: raw.message?.model && raw.message.model !== "<synthetic>" ? String(raw.message.model) : undefined,
           git: raw.gitBranch ? { branch: raw.gitBranch } : undefined,
         };
         headerSeen = true;
         start = { type: "session_start", formatVersion: FORMAT_VERSION, path: filePath, ...header };
+        if (start.model) yield* flushStart(); // model already known: nothing to wait for
       }
 
       if (raw.type === "system") {
         if (raw.subtype === "compact_boundary") {
-          events.push({ type: "compaction", id, parentId, timestamp: ts });
+          yield* emit({ type: "compaction", id, parentId, timestamp: ts });
         } else if (raw.subtype === "api_error") {
           const err = raw.error ?? {};
-          events.push({
+          yield* emit({
             type: "error",
             id,
             parentId,
@@ -89,13 +111,13 @@ export default {
           for (const b of content) {
             if (b?.type === "tool_result") {
               const callId = String(b.tool_use_id ?? "");
-              events.push({ type: "tool_result", id: `${id}:${callId}`, parentId, toolCallId: callId, toolName: toolNames.get(callId) ?? "", content: blockText(b.content), isError: b.is_error === true, timestamp: ts });
+              yield* emit({ type: "tool_result", id: `${id}:${callId}`, parentId, toolCallId: callId, toolName: callNames.get(callId) ?? "", content: blockText(b.content), isError: b.is_error === true, timestamp: ts });
             }
           }
-          const text = arrayText(content);
-          if (text && !isNoise(text)) events.push({ type: "user_message", id, parentId, text, timestamp: ts });
+          const text = joinTextBlocks(content);
+          if (text && !isNoise(text)) yield* emit({ type: "user_message", id, parentId, text, timestamp: ts });
         } else if (typeof content === "string" && content && !isNoise(content)) {
-          events.push({ type: "user_message", id, parentId, text: content, timestamp: ts });
+          yield* emit({ type: "user_message", id, parentId, text: content, timestamp: ts });
         }
         continue;
       }
@@ -115,14 +137,18 @@ export default {
             const name = String(b.name ?? "");
             const args = (b.input as Record<string, unknown>) ?? {};
             const callId = String(b.id ?? "");
-            toolNames.set(callId, name);
-            toolCalls.push({ id: callId, name, normalizedName: normalizeToolName(name, "claude-code", args), arguments: args });
+            callNames.set(callId, name);
+            toolCalls.push({ id: callId, name, arguments: args });
           }
         }
         const text = textParts.join("\n");
         if (text || toolCalls.length > 0 || thinkingParts.length > 0) {
           const thinking: Thinking | undefined = thinkingParts.length ? { text: thinkingParts.join("\n") } : undefined;
-          events.push({
+          const model = raw.message?.model ? String(raw.message.model) : "";
+          // First assistant settles the model; backfill start, then flush.
+          if (start && !start.model && model) start.model = model;
+          yield* flushStart();
+          yield {
             type: "assistant_message",
             id,
             parentId,
@@ -130,11 +156,11 @@ export default {
             thinking,
             toolCalls,
             provider: "anthropic",
-            model: raw.message?.model ? String(raw.message.model) : "",
+            model,
             stopReason: raw.message?.stop_reason ?? undefined,
             usage: extractUsage(raw.message?.usage),
             timestamp: ts,
-          });
+          };
         }
         continue;
       }
@@ -142,80 +168,34 @@ export default {
       if (raw.type === "attachment") {
         const att = raw.attachment;
         if (att?.type === "queued_command" && typeof att.prompt === "string" && att.prompt && !isNoise(att.prompt)) {
-          events.push({ type: "user_message", id, parentId, text: att.prompt, timestamp: ts });
+          yield* emit({ type: "user_message", id, parentId, text: att.prompt, timestamp: ts });
         }
       }
       // ai-title, mode, permission-mode, file-history-snapshot, turn_duration: skip.
     }
 
-    if (!start) return;
-    if (!start.model) {
-      const first = events.find(
-        (e): e is Extract<SessionEvent, { type: "assistant_message" }> =>
-          e.type === "assistant_message" && !!e.model,
-      );
-      if (first) start.model = first.model;
-    }
-    yield start;
-    yield* events;
+    // No assistant message ever settled the model: flush start (model unset)
+    // plus any held preamble. No-op when there was no header.
+    yield* flushStart();
   },
 
-  async detect(filePath) {
+  detect(first) {
     // No header line; a `sessionId` on the first parseable value is reliable
     // (pi has none; codex wraps everything in a `payload`).
-    const first = (await readFirstJsonValue(filePath)) as any;
-    return typeof first?.sessionId === "string" && typeof first?.type === "string";
+    const f = first as any;
+    return typeof f?.sessionId === "string" && typeof f?.type === "string";
   },
 
-  async *discover(opts = {}) {
-    const root = opts.sessionsDir ?? PROJECTS_DIR;
-    const cwdPattern = opts.cwdFilter?.toLowerCase();
-
-    let dirs: import("fs").Dirent[];
-    try {
-      dirs = await readdir(root, { withFileTypes: true });
-    } catch {
-      return;
-    }
-
-    for (const dir of dirs) {
-      if (!dir.isDirectory()) continue;
-      let files: import("fs").Dirent[];
-      try {
-        files = await readdir(join(root, dir.name), { withFileTypes: true });
-      } catch {
-        continue;
-      }
-      for (const file of files) {
-        if (file.isDirectory() || !file.name.endsWith(".jsonl")) continue; // skip subagents/ dir
-        const full = join(root, dir.name, file.name);
-
-        // Date filter via mtime (claude filenames carry no timestamp).
-        if (opts.since || opts.until) {
-          try {
-            const st = await stat(full);
-            if (opts.since && st.mtime < opts.since) continue;
-            if (opts.until && st.mtime > opts.until) continue;
-          } catch {
-            continue;
-          }
-        }
-        if (cwdPattern) {
-          const first = (await readFirstJsonValue(full)) as any;
-          const cwd = String(first?.cwd ?? "");
-          if (!(cwd || dir.name).toLowerCase().includes(cwdPattern)) continue;
-        }
-        yield full;
-      }
-    }
+  // Layout: <projects>/<cwd-slug>/<uuid>.jsonl. Filenames carry no timestamp
+  // (framework falls back to mtime); cwd lives in the file, with the dir slug
+  // as fallback. Non-recursive, so subagents/ subdirs are skipped.
+  discover: {
+    match: (name) => name.endsWith(".jsonl"),
+    cwdOf: (first, dirName) => String((first as any)?.cwd ?? "") || dirName,
   },
 } satisfies Adapter;
 
 // -- helpers -----------------------------------------------------------------
-
-function arrayText(content: any[]): string {
-  return content.filter((b) => b?.type === "text" && typeof b.text === "string").map((b) => b.text).join("\n");
-}
 
 /** tool_result content: string or array of {type:text,text}. */
 function blockText(content: unknown): string {

@@ -1,115 +1,95 @@
 #!/usr/bin/env bun
 
 /**
- * session-scan - mine pi sessions with pluggable scanners
+ * scan - one command over the canonical session event stream.
  *
- * Usage:
- *   bun src/cli.ts <scanner> [options]
- *   bun src/cli.ts list
+ * Default behavior is faithful normalization: every reduction is opt-in. Pass a
+ * file to normalize it; pass discovery flags to mine many sessions. LLM calls
+ * and aggregation are out of scope — pipe the output downstream (DuckDB over the
+ * ndjson; `--format md | your-llm`).
  *
- * Options:
- *   --cwd <pattern>     Filter sessions by cwd substring (default: repo from cwd, "all" for everything)
- *   --since <date>      Only sessions after this date (default: 7 days ago)
- *   --until <date>      Only sessions before this date
- *   --limit <n>         Max results to display (default: all)
- *   --json              Output as JSON
- *   --stats             Show summary stats only
- *   --source <name>     Restrict to one adapter (pi | claude-code | codex)
- *   --adapter <path>    Load an extra adapter file (repeatable)
- *   --sessions-dir <p>  Override an adapter's storage directory
+ *   scan <input>                         normalize one file (replaces normalize.ts)
+ *   scan --cwd binder --format md ...    readable transcripts of recent sessions
  *
- * Scanners:
- *   Built-in:  src/scanners/*.ts
- *   User:      ~/.session-scan/scanners/*.ts  (export { scanner } or default)
+ * Pipeline (per session):
+ *   streamSession → withContext → filter → [scanner] → trim → render → sink
  *
- * Adapters (pluggable session parsers):
- *   Built-in:  src/adapters/*.ts            (codex, claude-code)
- *   User:      ~/.session-scan/adapters/*.ts  (export { source } or default)
- *   Example:   examples/adapters/pi.ts      (pi is not built in)
+ * Flags:
+ *   locate    <input> | --cwd --since --until --source --adapter <path>...
+ *   filter    --type a,b  --tool a,b  --error  --role user|assistant|tool_result
+ *   scanner   --scanner ./file.ts            (runs after filter, replaces trim)
+ *   trim      --tool-lines N  --no-thinking  (default path only)
+ *   render    --format md                    (ndjson default)
+ *   sink      --out <file>  --out-dir <dir>  (stdout default)
  *
  * Examples:
- *   bun src/cli.ts binder-failures --stats           # current repo, last 7 days
- *   bun src/cli.ts binder-failures --cwd binder      # all binder sessions, last 7 days
- *   bun src/cli.ts binder-failures --cwd all --since 2026-01-01
- *   bun src/cli.ts binder-failures --adapter examples/adapters/pi.ts --source pi
- *   bun src/cli.ts list
+ *   scan test/fixtures/pi.jsonl
+ *   scan --cwd binder --format md --tool-lines 1 --no-thinking
+ *   scan --cwd binder --format md --out-dir tmp/transcripts
+ *   scan --cwd all --error --type tool_result --out tmp/errors.jsonl
+ *   scan --cwd binder --scanner ./examples/scanners/binder-failures.ts
  */
 
 import { parseArgs } from "util";
-import { basename } from "path";
+import { basename, resolve } from "path";
 import {
-  streamSession,
   discoverSessions,
   discover as discoverAdapters,
 } from "./parser/index.js";
-import { withContext } from "./context.js";
-import * as registry from "./scanners/index.js";
-import type { ScanResult } from "./scanner.js";
+import { loadScanner } from "./pipeline/index.js";
+import { run, type SinkConfig } from "./runner.js";
+import type { FilterCriteria } from "./pipeline/index.js";
 
-// ---------------------------------------------------------------------------
-// Discover scanners (built-in + user-defined)
-// ---------------------------------------------------------------------------
-
-await registry.discover();
-
-// ---------------------------------------------------------------------------
-// Args
-// ---------------------------------------------------------------------------
-
-const args = process.argv.slice(2);
-const scannerName = args.find((a) => !a.startsWith("-"));
-
-if (!scannerName || scannerName === "list") {
-  const all = registry.list();
-  console.log("Available scanners:\n");
-  for (const s of all) {
-    console.log(`  ${s.name.padEnd(24)} ${s.description}`);
-  }
-  console.log();
-  console.log("User scanners: ~/.session-scan/scanners/*.ts");
-  process.exit(0);
-}
-
-const scanner = registry.get(scannerName);
-if (!scanner) {
-  console.error(`Unknown scanner: ${scannerName}`);
-  console.error(`Run "bun src/cli.ts list" to see available scanners.`);
-  process.exit(1);
-}
-
-const flagArgs = args.filter((a) => a !== scannerName);
-
-const { values } = parseArgs({
-  args: flagArgs,
+const { values, positionals } = parseArgs({
+  args: process.argv.slice(2),
+  allowPositionals: true,
   options: {
+    // locate
     cwd: { type: "string" },
     since: { type: "string" },
     until: { type: "string" },
-    limit: { type: "string" },
-    json: { type: "boolean", default: false },
-    stats: { type: "boolean", default: false },
-    "sessions-dir": { type: "string" },
     source: { type: "string" },
     adapter: { type: "string", multiple: true },
+    // filter
+    type: { type: "string" },
+    tool: { type: "string" },
+    error: { type: "boolean", default: false },
+    role: { type: "string" },
+    // scanner
+    scanner: { type: "string" },
+    // trim
+    "tool-lines": { type: "string" },
+    "no-thinking": { type: "boolean", default: false },
+    // render
+    format: { type: "string" },
+    // sink
+    out: { type: "string" },
+    "out-dir": { type: "string" },
   },
   strict: true,
 });
 
-// Load pluggable adapters: built-in (src/adapters), user
-// (~/.session-scan/adapters), and any passed via --adapter <path>.
-await discoverAdapters({ extra: values.adapter ?? [] });
+const input = positionals[0];
 
-// Default --cwd: derive repo name from current directory
+// Load adapters: built-in + user + --adapter, plus the bundled pi reference
+// adapter so its files auto-detect (pi is not built in).
+const piRef = resolve(import.meta.dir, "../examples/adapters/pi.ts");
+await discoverAdapters({ extra: [piRef, ...(values.adapter ?? [])] });
+
+// -- locate ------------------------------------------------------------------
+
+async function* single(file: string): AsyncGenerator<string> {
+  yield file;
+}
+
 function defaultCwd(): string | undefined {
   if (values.cwd === "all") return undefined;
   if (values.cwd) return values.cwd;
   const cwd = process.cwd();
-  const srcMatch = cwd.match(/\/src\/([^/]+)/);
-  if (srcMatch) return srcMatch[1];
-  return basename(cwd);
+  const m = cwd.match(/\/src\/([^/]+)/);
+  return m ? m[1] : basename(cwd);
 }
 
-// Default --since: 7 days ago
 function defaultSince(): Date | undefined {
   if (values.since) return new Date(values.since);
   const d = new Date();
@@ -117,153 +97,68 @@ function defaultSince(): Date | undefined {
   return d;
 }
 
-const opts = {
-  cwdFilter: defaultCwd(),
-  since: defaultSince(),
-  until: values.until ? new Date(values.until) : undefined,
-  source: values.source,
-  sessionsDir: values["sessions-dir"],
+const files: AsyncIterable<string> = input
+  ? single(input)
+  : discoverSessions({
+      cwdFilter: defaultCwd(),
+      since: defaultSince(),
+      until: values.until ? new Date(values.until) : undefined,
+      source: values.source,
+    });
+
+// -- filter ------------------------------------------------------------------
+
+const ROLES = new Set(["user", "assistant", "tool_result"]);
+const roles = values.role
+  ?.split(",")
+  .map((r) => r.trim())
+  .filter((r) => ROLES.has(r)) as FilterCriteria["roles"];
+
+const filter: FilterCriteria = {
+  types: values.type?.split(",").map((s) => s.trim()),
+  tools: values.tool?.split(",").map((s) => s.trim()),
+  error: values.error,
+  roles,
 };
 
-const limit = values.limit ? parseInt(values.limit, 10) : Infinity;
+// -- scanner -----------------------------------------------------------------
 
-// ---------------------------------------------------------------------------
-// Run: collect + extract
-// ---------------------------------------------------------------------------
+const scanner = values.scanner ? await loadScanner(values.scanner) : undefined;
 
-const allResults: ScanResult[] = [];
-let sessionsFound = 0;
-const sessionsWithResults = new Set<string>();
+// -- trim --------------------------------------------------------------------
+
+const trim = {
+  toolLines:
+    values["tool-lines"] !== undefined
+      ? parseInt(values["tool-lines"], 10)
+      : undefined,
+  noThinking: values["no-thinking"],
+};
+
+// -- render + sink -----------------------------------------------------------
+
+const format = values.format === "md" ? "md" : "ndjson";
+
+const sink: SinkConfig = values["out-dir"]
+  ? { kind: "dir", path: values["out-dir"] }
+  : values.out
+    ? { kind: "file", path: values.out }
+    : { kind: "stdout" };
+
+// -- run ---------------------------------------------------------------------
 
 const t0 = performance.now();
-
-for await (const filePath of discoverSessions(opts)) {
-  sessionsFound++;
-
-  for await (const candidate of scanner.collect(
-    withContext(streamSession(filePath, { source: values.source })),
-  )) {
-    const results = await scanner.extract(candidate);
-    for (const r of results) {
-      allResults.push(r);
-      sessionsWithResults.add(filePath);
-    }
-  }
-}
-
+const stats = await run({
+  files,
+  source: values.source,
+  filter,
+  scanner,
+  trim,
+  format,
+  sink,
+});
 const elapsed = ((performance.now() - t0) / 1000).toFixed(2);
 
-// ---------------------------------------------------------------------------
-// Output
-// ---------------------------------------------------------------------------
-
-const resultCount = allResults.length;
-const hitSessions = sessionsWithResults.size;
-
-if (values.json) {
-  const output = {
-    scanner: scanner.name,
-    stats: {
-      sessionsFound,
-      sessionsWithResults: hitSessions,
-      totalResults: resultCount,
-      elapsed: `${elapsed}s`,
-    },
-    results: allResults.slice(0, limit),
-  };
-  console.log(JSON.stringify(output, null, 2));
-  process.exit(0);
-}
-
-console.log(
-  `${scanner.name}: ${sessionsFound} sessions, ${resultCount} results in ${hitSessions} sessions, ${elapsed}s`,
+console.error(
+  `scanned ${stats.sessionsFound} sessions, wrote ${stats.sessionsWritten} (${stats.eventsWritten} events) in ${elapsed}s`,
 );
-console.log();
-
-if (values.stats) {
-  const byKind = new Map<string, number>();
-  for (const r of allResults) {
-    byKind.set(r.kind, (byKind.get(r.kind) ?? 0) + 1);
-  }
-  for (const [kind, count] of [...byKind.entries()].sort(
-    (a, b) => b[1] - a[1],
-  )) {
-    console.log(`  ${kind}: ${count}`);
-  }
-
-  console.log();
-  const byCwd = new Map<string, number>();
-  for (const r of allResults) {
-    byCwd.set(r.cwd, (byCwd.get(r.cwd) ?? 0) + 1);
-  }
-  console.log("By working directory:");
-  for (const [cwd, count] of [...byCwd.entries()]
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 20)) {
-    console.log(`  ${count.toString().padStart(4)}  ${cwd}`);
-  }
-
-  console.log();
-  const bySummary = new Map<string, number>();
-  for (const r of allResults) {
-    const key = r.summary.slice(0, 80);
-    bySummary.set(key, (bySummary.get(key) ?? 0) + 1);
-  }
-  console.log("Top patterns:");
-  for (const [pattern, count] of [...bySummary.entries()]
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 15)) {
-    console.log(`  ${count.toString().padStart(4)}  ${pattern}`);
-  }
-
-  process.exit(0);
-}
-
-// Detailed output
-const displayed = allResults.slice(0, limit);
-for (const r of displayed) {
-  const date = new Date(r.timestamp).toLocaleString();
-  const cwdShort = r.cwd.replace(/.*\/src\//, "");
-
-  console.log(
-    `${dim(date)}  ${yellow(r.kind.padEnd(14))}  ${cyan(cwdShort)}`,
-  );
-  console.log(`  ${r.summary}`);
-
-  const data = r.data as Record<string, unknown>;
-  if (data?.command) {
-    console.log(`  cmd: ${dim(truncLine(String(data.command), 120))}`);
-  }
-  if (data?.userPrompt) {
-    console.log(`  ask: ${dim(truncLine(String(data.userPrompt), 120))}`);
-  }
-  if (
-    typeof data?.priorErrorsInTurn === "number" &&
-    data.priorErrorsInTurn > 0
-  ) {
-    console.log(
-      `  ${dim(`(${data.priorErrorsInTurn} prior error(s) in this turn)`)}`,
-    );
-  }
-  console.log();
-}
-
-// ---------------------------------------------------------------------------
-// Formatting helpers
-// ---------------------------------------------------------------------------
-
-function dim(s: string) {
-  return `\x1b[2m${s}\x1b[0m`;
-}
-function yellow(s: string) {
-  return `\x1b[33m${s}\x1b[0m`;
-}
-function cyan(s: string) {
-  return `\x1b[36m${s}\x1b[0m`;
-}
-
-function truncLine(s: string, max: number): string {
-  const line = s.replace(/\n/g, " ").trim();
-  if (line.length <= max) return line;
-  return line.slice(0, max) + "...";
-}

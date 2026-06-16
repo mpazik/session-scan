@@ -7,10 +7,17 @@
  * downstream works against the canonical `SessionEvent` model (see session.ts),
  * so the framework never needs harness-specific knowledge.
  *
- * An adapter answers four questions about its harness:
- *   - detect:     is this file mine?
- *   - discover:   where do my sessions live, and which ones match the filters?
- *   - parse:      turn one native file into a stream of canonical SessionEvents.
+ * The contract is declarative where possible; the framework does the work:
+ *   - detect:     recognize the file's first JSON value (the framework reads
+ *                 it once and probes every adapter).
+ *   - discover:   a `DiscoverSpec` describing the storage layout (the
+ *                 framework walks it and applies cwd/date filters), or a
+ *                 custom generator as escape hatch.
+ *   - parse:      turn one native file into a stream of canonical
+ *                 SessionEvents. Pure format mapping: no filter logic, no
+ *                 tool-name normalization.
+ *   - toolNames:  native -> canonical tool-name mapping; the framework stamps
+ *                 `toolCall.normalizedName` on every assistant_message.
  *   - storageDir: where this harness stores sessions for a given cwd.
  *
  * Adapters are pluggable modules (default export). Built-ins live in
@@ -19,28 +26,39 @@
  * for a reference implementation.
  */
 
-import type { SessionEvent } from "../session.js";
+import type { SessionEvent, NormalizedToolName } from "../session.js";
 
-// -- Filter options ----------------------------------------------------------
-
-export interface StreamOptions {
-  /** Skip the file if the header timestamp is before this date. */
-  since?: Date;
-  /** Skip the file if the header timestamp is after this date. */
-  until?: Date;
-  /** Skip files whose cwd does not contain this substring (case-insensitive). */
-  cwdFilter?: string;
-}
+// -- Discovery ---------------------------------------------------------------
 
 export interface DiscoverOptions {
   /** Override the storage directory to scan. */
   sessionsDir?: string;
-  /** Only yield files from directories matching this cwd substring (case-insensitive). */
+  /** Only yield files whose session cwd matches this substring (case-insensitive). */
   cwdFilter?: string;
   /** Only yield files with timestamps on or after this date. */
   since?: Date;
   /** Only yield files with timestamps on or before this date. */
   until?: Date;
+}
+
+/**
+ * Declarative storage layout. The framework's walker consumes it: it scans
+ * `storageDir()` (one directory level by default), matches filenames, and
+ * applies the since/until/cwd filters from DiscoverOptions.
+ */
+export interface DiscoverSpec {
+  /** Walk arbitrarily nested dirs (codex: yyyy/mm/dd). Default: storageDir/<dir>/<file>. */
+  recursive?: boolean;
+  /** Is this filename a session file? */
+  match: (fileName: string) => boolean;
+  /** "YYYY-MM-DD" extracted from the filename; omit to filter by mtime instead. */
+  dateOf?: (fileName: string) => string | undefined;
+  /**
+   * Resolve the session's cwd for cwd filtering. Receives the file's first
+   * JSON value (read only when a cwd filter is active) and the name of the
+   * containing directory. Omit to disable cwd filtering for this harness.
+   */
+  cwdOf?: (firstValue: unknown, dirName: string) => string;
 }
 
 // -- Adapter interface -------------------------------------------------------
@@ -52,28 +70,26 @@ export interface Adapter {
   /** Where this agent stores sessions for the given cwd. */
   storageDir(opts?: { cwd?: string }): string;
 
-  /** Stream normalized SessionEvents from a known session file. */
-  parse(filePath: string, opts?: StreamOptions): AsyncGenerator<SessionEvent>;
+  /**
+   * Native -> canonical tool names (see NormalizedToolName). A static map for
+   * harnesses with dedicated tools; a classifier function for harnesses that
+   * route everything through generic tools (codex). The framework fills
+   * `toolCall.normalizedName` from this; unmapped names pass through as-is.
+   */
+  toolNames?:
+    | Record<string, NormalizedToolName>
+    | ((name: string, args: Record<string, unknown>) => NormalizedToolName);
 
-  /** True if this adapter recognizes the file as its own native format. */
-  detect(filePath: string): Promise<boolean>;
+  /**
+   * True if the file looks like this harness's format. `firstValue` is the
+   * file's first parseable JSON value, or null when there is none (a plain-text
+   * `/export` transcript): such adapters sniff `filePath` synchronously.
+   */
+  detect(firstValue: unknown, filePath: string): boolean;
 
-  /** Discover session files under storageDir, with cwd/date filters. */
-  discover(opts?: DiscoverOptions): AsyncGenerator<string>;
+  /** Stream canonical SessionEvents from a known session file. */
+  parse(filePath: string): AsyncGenerator<SessionEvent>;
 
-  /** Optional spawn-capture discovery override (see spawn-capture.md). */
-  findSession?(ctx: FindSessionContext): Promise<string | null>;
-}
-
-export interface FindSessionContext {
-  /** Files present in storageDir before the spawn started. */
-  preSnapshot: Set<string>;
-  /** When the spawn started. */
-  startedAt: Date;
-  /** When the spawn finished. */
-  finishedAt: Date;
-  /** What the spawn callback returned, if anything. */
-  spawn: unknown;
-  /** The cwd passed to captureSession. */
-  cwd?: string;
+  /** Storage layout spec, or a custom discovery generator as escape hatch. */
+  discover: DiscoverSpec | ((opts?: DiscoverOptions) => AsyncGenerator<string>);
 }

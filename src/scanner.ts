@@ -1,13 +1,24 @@
 /**
- * Scanner framework: turn context, candidates, results, and the Scanner
- * contract. These are orchestration types, layered on top of the canonical
- * session model in `session.ts` (which they import). Kept out of `session.ts`
- * so the wire model stays self-contained.
+ * Event-context types and the scanner contract.
+ *
+ * These layer on top of the canonical session model in `session.ts`. They are
+ * kept out of `session.ts` so the wire model stays self-contained.
+ *
+ * - `Turn` / `EventContext` / `ContextualEvent`: turn correlation attached to
+ *   every event by `withContext` (see context.ts). The whole pipeline runs over
+ *   `ContextualEvent`s.
+ * - `Scanner` / `ScanEvent`: the one user-extensible unit. A scanner is a single
+ *   async generator over one session's contextual events; it emits partial
+ *   events (`ScanEvent`) and may emit a trailing per-session summary. Loaded by
+ *   path (`--scanner ./file.ts`), never registered.
  */
 
-import type { SessionEvent, UserMessageEvent, ToolCall } from "./session.js";
+import type {
+  SessionEvent,
+  SessionMetadata,
+  UserMessageEvent,
+} from "./session.js";
 
-// -- Context-enriched events -------------------------------------------------
 
 /** A turn: a user message plus everything the agent did in response. */
 export interface Turn {
@@ -17,98 +28,47 @@ export interface Turn {
   events: SessionEvent[];
 }
 
+/**
+ * Per-event context: only what varies as you walk the stream. Session-invariant
+ * identity (cwd, path, timestamp, ...) is NOT here — it lives on `SessionMetadata`,
+ * passed once to the scanner. Stamping it on every event would be pure redundancy.
+ */
 export interface EventContext {
   /** Current turn (null before the first user message). */
   turn: Turn | null;
   /** Previous turn (null before the second user message). */
   prevTurn: Turn | null;
-  /** Active model, tracked from each assistant message. */
+  /** Active model, tracked from each assistant message (can change mid-session). */
   model: string;
-  /** Session path. */
-  sessionPath: string;
-  /** Session cwd. */
-  cwd: string;
-  /** Session start timestamp. */
-  sessionTimestamp: string;
 }
 
 export type ContextualEvent<T extends SessionEvent = SessionEvent> = T & {
   context: EventContext;
 };
 
-// -- Use case framework ------------------------------------------------------
+// -- Scanner contract --------------------------------------------------------
 
 /**
- * A message in a candidate's context window. Flattened representation suitable
- * for LLM prompts or pattern matching.
+ * A scanner's output unit: a partial event. `type` is the only required field;
+ * everything else from `SessionEvent` is optional, and arbitrary extra fields
+ * (findings, annotations) are allowed.
  */
-export interface MessageSlice {
-  role: "user" | "assistant" | "tool_result" | "system";
-  text: string;
-  timestamp: string;
-  /** For tool_result: was it an error? */
-  isError?: boolean;
-  /** For tool_result: the command that produced it, when recoverable. */
-  command?: string;
-  /** For assistant: tool calls made. */
-  toolCalls?: ToolCall[];
-}
+export type ScanEvent = Pick<SessionEvent, "type"> &
+  Partial<SessionEvent> &
+  Record<string, unknown>;
 
 /**
- * A bounded chunk of session context worth analyzing. Produced by a scanner's
- * collect phase, consumed by its extract phase.
- */
-export interface Candidate {
-  /** Stable id for dedup (e.g. sessionPath:entryId). */
-  id: string;
-  /** Session file path. */
-  sessionPath: string;
-  /** Session cwd. */
-  cwd: string;
-  /** When this candidate was found. */
-  timestamp: string;
-  /** Bounded context: the messages/events around the point of interest. */
-  messages: MessageSlice[];
-  /** Use-case-defined metadata passed from collect to extract. */
-  meta: Record<string, unknown>;
-}
-
-/** A result produced by a scanner. */
-export interface ScanResult<T = unknown> {
-  /** Use-case-defined category. */
-  kind: string;
-  /** Human-readable one-liner. */
-  summary: string;
-  /** Entry id where the finding was made. */
-  entryId: string;
-  /** When it happened. */
-  timestamp: string;
-  /** Session path. */
-  sessionPath: string;
-  /** Session cwd. */
-  cwd: string;
-  /** Use-case-specific structured data. */
-  data: T;
-}
-
-/**
- * A scanner definition.
+ * A scanner: one async generator per session. State is local to the generator
+ * and resets per session. Annotate input events (`{ ...ev, finding }`) or emit
+ * synthetic `custom_message`s; emit any per-session summary when the input ends,
+ * then return. Must not compute cross-session rollups — that's downstream.
  *
- * collect: fast, streams contextual events, yields candidates with bounded
- * context. extract: slower, analyzes one candidate, may call an LLM, returns
- * results. For pure pattern matching, extract just reshapes candidate.meta.
+ * `events` is the spine: the session's contextual event stream. `session` is the
+ * invariant identity (cwd, path, timestamp, ...), passed once up front.
  *
- * Files:
- *   Built-in:  src/scanners/<name>.ts
- *   User:      ~/.session-scan/scanners/<name>.ts
+ * Loaded by path via `--scanner ./file.ts` as the module's default export.
  */
-export interface Scanner<T = unknown> {
-  name: string;
-  description: string;
-
-  /** Fast. Scan contextual events, yield candidates worth analyzing. */
-  collect: (events: AsyncGenerator<ContextualEvent>) => AsyncGenerator<Candidate>;
-
-  /** Analyze one candidate. May call an LLM. Returns zero or more results. */
-  extract: (candidate: Candidate) => Promise<ScanResult<T>[]>;
-}
+export type Scanner = (
+  events: AsyncGenerator<ContextualEvent>,
+  session: SessionMetadata,
+) => AsyncGenerator<ScanEvent>;

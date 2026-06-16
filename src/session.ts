@@ -56,8 +56,12 @@ export interface ToolCall {
   id: string;
   /** Native tool name as the harness recorded it. */
   name: string;
-  /** Normalized name. Match on this to stay portable across agents for standard tools. */
-  normalizedName: NormalizedToolName;
+  /**
+   * Canonical name, stamped by the framework from the adapter's `toolNames`
+   * mapping (unmapped names pass through). Adapters leave this unset. Match
+   * on this to stay portable across agents for standard tools.
+   */
+  normalizedName?: NormalizedToolName;
   arguments: Record<string, unknown>;
 }
 

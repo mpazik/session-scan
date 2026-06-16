@@ -13,9 +13,6 @@ import type { ContextualEvent, EventContext, Turn } from "./scanner.js";
 export async function* withContext(
   events: AsyncGenerator<SessionEvent>,
 ): AsyncGenerator<ContextualEvent> {
-  let sessionPath = "";
-  let cwd = "";
-  let sessionTimestamp = "";
   let model = "";
 
   let turn: Turn | null = null;
@@ -25,9 +22,9 @@ export async function* withContext(
 
   for await (const event of events) {
     if (event.type === "session_start") {
-      sessionPath = event.path ?? "";
-      cwd = event.cwd;
-      sessionTimestamp = event.timestamp;
+      // Session-invariant identity is NOT stamped here; it lives on
+      // SessionMetadata (the scanner's second arg). withContext only resets
+      // turn state and tracks the active model.
       model = event.model ?? "";
       turn = null;
       prevTurn = null;
@@ -65,13 +62,6 @@ export async function* withContext(
   }
 
   function makeContext(): EventContext {
-    return {
-      turn,
-      prevTurn,
-      model,
-      sessionPath,
-      cwd,
-      sessionTimestamp,
-    };
+    return { turn, prevTurn, model };
   }
 }

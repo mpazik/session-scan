@@ -1,12 +1,8 @@
 /**
- * Utility functions for scanners.
+ * Frustration detection for user messages.
  */
 
-// ---------------------------------------------------------------------------
-// Frustration detection
-// ---------------------------------------------------------------------------
-
-interface FrustrationResult {
+export interface FrustrationResult {
   /** 0-1 score. Higher = more frustrated. */
   score: number;
   /** Which signals matched */
@@ -75,7 +71,6 @@ export function frustrationScore(
   const signals: string[] = [];
   let raw = 0;
 
-  // Pattern matching
   for (const [pattern, name, weight] of FRUSTRATION_PATTERNS) {
     if (pattern.test(text)) {
       signals.push(name);
@@ -97,30 +92,5 @@ export function frustrationScore(
     }
   }
 
-  // Clamp to 0-1
-  const score = Math.min(1, raw);
-
-  return { score, signals };
-}
-
-// ---------------------------------------------------------------------------
-// Text helpers
-// ---------------------------------------------------------------------------
-
-/** Truncate text, adding ... if trimmed. */
-export function truncate(text: string, maxLen = 300): string {
-  if (text.length <= maxLen) return text;
-  return text.slice(0, maxLen) + "...";
-}
-
-/** Flatten text to a single line, truncated. */
-export function truncLine(text: string, maxLen = 120): string {
-  const line = text.replace(/\n/g, " ").trim();
-  if (line.length <= maxLen) return line;
-  return line.slice(0, maxLen) + "...";
-}
-
-/** Strip ANSI escape codes. */
-export function stripAnsi(text: string): string {
-  return text.replace(/\x1b\[[0-9;]*m/g, "");
+  return { score: Math.min(1, raw), signals };
 }

@@ -3,40 +3,22 @@
  *
  * Writing a scanner:
  *
- *   // ~/.session-scan/scanners/my-scanner.ts
- *   import type { Scanner } from "session-scan";
+ *   // ./my-scanner.ts  (loaded via --scanner ./my-scanner.ts)
+ *   import type { ContextualEvent, ScanEvent } from "session-scan";
  *
- *   export const scanner: Scanner = {
- *     name: "my-scanner",
- *     description: "Finds something interesting",
- *
- *     async *collect(events) {
- *       for await (const event of events) {
- *         if (event.type === "tool_result" && event.isError) {
- *           yield {
- *             id: `${event.context.sessionPath}:${event.id}`,
- *             sessionPath: event.context.sessionPath,
- *             cwd: event.context.cwd,
- *             timestamp: event.timestamp,
- *             messages: [{ role: "tool_result", text: event.content, timestamp: event.timestamp }],
- *             meta: { error: event.content },
- *           };
- *         }
+ *   export default async function* (
+ *     events: AsyncGenerator<ContextualEvent>,
+ *   ): AsyncGenerator<ScanEvent> {
+ *     let errors = 0;
+ *     for await (const ev of events) {
+ *       if (ev.type === "tool_result" && ev.isError) {
+ *         errors++;
+ *         yield { ...ev, finding: { kind: "error" } };
  *       }
- *     },
- *
- *     async extract(candidate) {
- *       return [{
- *         kind: "error",
- *         summary: candidate.meta.error as string,
- *         entryId: candidate.id,
- *         timestamp: candidate.timestamp,
- *         sessionPath: candidate.sessionPath,
- *         cwd: candidate.cwd,
- *         data: candidate.meta,
- *       }];
- *     },
- *   };
+ *     }
+ *     // per-session summary when the input ends
+ *     yield { type: "custom_message", customType: "scan_summary", errors };
+ *   }
  */
 
 // Parser framework + pluggable adapters
@@ -49,23 +31,22 @@ export {
   list as listAdapters,
   discover as discoverAdapters,
   loadAdapterFile,
-  normalizeToolName,
+  joinTextBlocks,
 } from "./parser/index.js";
 export type {
-  SessionSource,
+  Adapter,
   StreamOptions,
   DiscoverOptions,
-  FindSessionContext,
+  DiscoverSpec,
 } from "./parser/index.js";
 
 // Context enrichment
 export { withContext } from "./context.js";
 
 // Utilities
-export { frustrationScore, truncate, truncLine, stripAnsi } from "./utils.js";
-
-// Scanner registry
-export { discover, register, get, list } from "./scanners/index.js";
+export { truncate, truncLine, stripAnsi } from "./lib/string.js";
+export { frustrationScore } from "./lib/sentiment.js";
+export type { FrustrationResult } from "./lib/sentiment.js";
 
 // Session model
 export type {
@@ -84,13 +65,11 @@ export type {
   NormalizedToolName,
 } from "./session.js";
 
-// Scanner framework
+// Event context + scanner contract
 export type {
   Turn,
   EventContext,
   ContextualEvent,
   Scanner,
-  Candidate,
-  MessageSlice,
-  ScanResult,
+  ScanEvent,
 } from "./scanner.js";

@@ -14,7 +14,8 @@
 
 import { readdir } from "fs/promises";
 import { join, isAbsolute, resolve } from "path";
-import type { Adapter } from "./adapter.js";
+import type { Adapter, DiscoverSpec } from "./adapter.js";
+import { readFirstJsonValue } from "./read-lines.js";
 
 const registry = new Map<string, Adapter>();
 let discovered = false;
@@ -39,13 +40,17 @@ export function list(): Adapter[] {
 }
 
 function isAdapter(s: unknown): s is Adapter {
+  if (!s || typeof s !== "object") return false;
+  const a = s as Adapter;
+  const d: unknown = a.discover;
+  const discoverOk =
+    typeof d === "function" ||
+    (!!d && typeof d === "object" && typeof (d as DiscoverSpec).match === "function");
   return (
-    !!s &&
-    typeof s === "object" &&
-    typeof (s as Adapter).name === "string" &&
-    typeof (s as Adapter).parse === "function" &&
-    typeof (s as Adapter).detect === "function" &&
-    typeof (s as Adapter).discover === "function"
+    typeof a.name === "string" &&
+    typeof a.parse === "function" &&
+    typeof a.detect === "function" &&
+    discoverOk
   );
 }
 
@@ -68,7 +73,7 @@ export async function loadAdapterFile(
       return s;
     }
     console.error(
-      `Warning: ${path} does not export a valid Adapter (default export with name, parse, detect, discover)`,
+      `Warning: ${path} does not export a valid Adapter (default export with name, parse, detect, and a discover spec or function)`,
     );
   } catch (err) {
     console.error(`Warning: failed to load adapter ${resolved}: ${err}`);
@@ -108,13 +113,21 @@ export async function discover(opts: { extra?: string[] } = {}): Promise<void> {
 // Detection
 // ---------------------------------------------------------------------------
 
-/** Identify which adapter produced a file by trying each registered detect(). */
+/**
+ * Identify which adapter produced a file. Reads the file's first JSON value
+ * once, then probes each registered adapter's detect() with it.
+ *
+ * `first` is null when the file has no parseable JSON value (e.g. a plain-text
+ * `/export` transcript). Adapters are still probed in that case: JSON adapters
+ * key on `first?.x` and return false, while text adapters sniff via `filePath`.
+ */
 export async function detectSource(
   filePath: string,
 ): Promise<Adapter | null> {
   await discover();
+  const first = await readFirstJsonValue(filePath);
   for (const source of list()) {
-    if (await source.detect(filePath)) return source;
+    if (source.detect(first, filePath)) return source;
   }
   return null;
 }

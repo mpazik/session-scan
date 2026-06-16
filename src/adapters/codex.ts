@@ -11,7 +11,6 @@
  * linear, so ids are a synthesized counter and parentId is always null.
  */
 
-import { readdir } from "fs/promises";
 import { join } from "path";
 import type {
   SessionEvent,
@@ -20,11 +19,12 @@ import type {
   Thinking,
   TokenUsage,
   AssistantMessageEvent,
+  NormalizedToolName,
 } from "../session.js";
 import { FORMAT_VERSION } from "../session.js";
 import type { Adapter } from "../parser/adapter.js";
-import { normalizeToolName } from "../parser/tool-names.js";
-import { readJsonValues, readFirstJsonValue } from "../parser/read-lines.js";
+import { readJsonValues } from "../parser/read-lines.js";
+import { joinTextBlocks } from "../parser/content.js";
 
 const SESSIONS_DIR = join(process.env.HOME || "~", ".codex", "sessions");
 
@@ -32,7 +32,9 @@ export default {
   name: "codex",
   storageDir: () => SESSIONS_DIR,
 
-  async *parse(filePath, opts = {}) {
+  toolNames: classifyTool,
+
+  async *parse(filePath) {
     let counter = 0;
     const nextId = () => `e${counter++}`;
     let ts = "";
@@ -40,7 +42,7 @@ export default {
     const events: SessionEvent[] = [];
     const assistantMsgs: AssistantMessageEvent[] = [];
     const usages: TokenUsage[] = [];
-    const toolNames = new Map<string, string>(); // call_id -> tool name
+    const callNames = new Map<string, string>(); // call_id -> tool name
 
     // Header fields, accumulated as they appear (session_meta, turn_context).
     let headerSeen = false;
@@ -73,16 +75,12 @@ export default {
       const payload = raw.payload ?? {};
 
       if (raw.type === "session_meta") {
-        const cwd = String(payload.cwd ?? "");
-        if (opts.cwdFilter && !cwd.toLowerCase().includes(opts.cwdFilter.toLowerCase())) return;
-        if (ts && opts.since && new Date(ts) < opts.since) return;
-        if (ts && opts.until && new Date(ts) > opts.until) return;
         const git = payload.git as Record<string, any> | null | undefined;
         header = {
           agent: "codex",
           id: String(payload.id ?? ""),
           timestamp: ts,
-          cwd,
+          cwd: String(payload.cwd ?? ""),
           model: payload.model ? String(payload.model) : undefined,
           git: git
             ? {
@@ -130,7 +128,7 @@ export default {
 
       if (it === "message") {
         if (payload.role === "developer" || payload.role === "system") continue; // injected instructions
-        const text = filterUserText(joinText(payload.content), payload.role);
+        const text = filterUserText(joinTextBlocks(payload.content, { typed: false }), payload.role);
         if (!text) continue;
         if (payload.role === "user") {
           flushPending();
@@ -145,18 +143,20 @@ export default {
         const name = String(payload.name ?? "");
         const args = it === "custom_tool_call" ? coerceInput(payload.input) : parseArgs(payload.arguments);
         const callId = String(payload.call_id ?? nextId());
-        toolNames.set(callId, name);
-        ensurePending().toolCalls.push({ id: callId, name, normalizedName: normalizeToolName(name, "codex", args), arguments: args });
+        callNames.set(callId, name);
+        ensurePending().toolCalls.push({ id: callId, name, arguments: args });
       } else if (it === "web_search_call") {
-        const action = payload.action as Record<string, any> | undefined;
+        // arguments = the action object ({type, query?/url?}); classifyTool
+        // reads its `type` to split web_search from web_fetch (open_page).
+        const action = payload.action as Record<string, unknown> | undefined;
         const callId = String(payload.call_id ?? nextId());
-        toolNames.set(callId, "web_search");
-        ensurePending().toolCalls.push({ id: callId, name: "web_search", normalizedName: normalizeToolName("web_search", "codex", { action }), arguments: action ? { url: action.url } : {} });
+        callNames.set(callId, "web_search");
+        ensurePending().toolCalls.push({ id: callId, name: "web_search", arguments: action ?? {} });
       } else if (it === "function_call_output" || it === "custom_tool_call_output") {
         flushPending();
         const callId = String(payload.call_id ?? "");
         const { output, isError, exitCode } = parseToolOutput(payload.output);
-        events.push({ type: "tool_result", id: nextId(), parentId: null, toolCallId: callId, toolName: toolNames.get(callId) ?? "", content: output, isError, exitCode, timestamp: ts });
+        events.push({ type: "tool_result", id: nextId(), parentId: null, toolCallId: callId, toolName: callNames.get(callId) ?? "", content: output, isError, exitCode, timestamp: ts });
       }
     }
 
@@ -172,62 +172,66 @@ export default {
     yield* events;
   },
 
-  async detect(filePath) {
-    const first = (await readFirstJsonValue(filePath)) as any;
-    if (!first) return false;
-    if (first?.type === "session_meta") return true;
+  detect(first) {
+    const f = first as any;
+    if (!f) return false;
+    if (f?.type === "session_meta") return true;
     return (
-      first?.payload != null &&
-      typeof first.payload === "object" &&
-      (typeof first.payload.originator === "string" || typeof first.payload.cli_version === "string")
+      f?.payload != null &&
+      typeof f.payload === "object" &&
+      (typeof f.payload.originator === "string" || typeof f.payload.cli_version === "string")
     );
   },
 
-  async *discover(opts = {}) {
-    const root = opts.sessionsDir ?? SESSIONS_DIR;
-    const sinceStr = opts.since?.toISOString().slice(0, 10);
-    const untilStr = opts.until?.toISOString().slice(0, 10);
-    const cwdPattern = opts.cwdFilter?.toLowerCase();
-
-    async function* walk(dir: string): AsyncGenerator<string> {
-      let entries: import("fs").Dirent[];
-      try {
-        entries = await readdir(dir, { withFileTypes: true });
-      } catch {
-        return;
-      }
-      for (const entry of entries) {
-        const full = join(dir, entry.name);
-        if (entry.isDirectory()) {
-          yield* walk(full);
-          continue;
-        }
-        if (!entry.name.startsWith("rollout-") || !entry.name.endsWith(".jsonl")) continue;
-        // Filename: rollout-2025-09-25T13-42-49-<uuid>.jsonl
-        if (sinceStr || untilStr) {
-          const dateStr = entry.name.slice(8, 18);
-          if (sinceStr && dateStr < sinceStr) continue;
-          if (untilStr && dateStr > untilStr) continue;
-        }
-        if (cwdPattern) {
-          const first = (await readFirstJsonValue(full)) as any;
-          const cwd = String(first?.payload?.cwd ?? "");
-          if (!cwd.toLowerCase().includes(cwdPattern)) continue;
-        }
-        yield full;
-      }
-    }
-
-    yield* walk(root);
+  // Layout: <sessions>/yyyy/mm/dd/rollout-2025-09-25T13-42-49-<uuid>.jsonl.
+  discover: {
+    recursive: true,
+    match: (name) => name.startsWith("rollout-") && name.endsWith(".jsonl"),
+    dateOf: (name) => name.slice(8, 18),
+    cwdOf: (first) => String((first as any)?.payload?.cwd ?? ""),
   },
 } satisfies Adapter;
 
 // -- helpers -----------------------------------------------------------------
 
-function joinText(content: unknown): string {
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-  return content.filter((c: any) => typeof c?.text === "string").map((c: any) => c.text).join("\n");
+/**
+ * Codex tool names -> harness-neutral canonical names. Codex routes everything
+ * through a few generic tools, so the classifiers inspect the arguments:
+ * `exec_command`/`shell` by shell command, `apply_patch` by patch header,
+ * `web_search` by action type.
+ */
+function classifyTool(tool: string, input: Record<string, unknown>): NormalizedToolName {
+  if (tool === "exec_command" || tool === "shell") {
+    const cmd =
+      typeof input.cmd === "string"
+        ? input.cmd
+        : typeof input.command === "string"
+          ? input.command
+          : Array.isArray(input.command)
+            ? (input.command as unknown[]).join(" ")
+            : "";
+    return classifyExecCommand(cmd);
+  }
+  if (tool === "apply_patch") {
+    // function_call carries {input: patch}; custom_tool_call coerces to {raw: patch}.
+    const patch =
+      typeof input.input === "string" ? input.input : typeof input.raw === "string" ? input.raw : "";
+    return patch.includes("*** Add File:") ? "file_write" : "file_edit";
+  }
+  if (tool === "web_search") {
+    return input.type === "open_page" ? "web_fetch" : "web_search";
+  }
+  return tool;
+}
+
+/** Classify an `exec_command` by inspecting the shell command string. */
+function classifyExecCommand(cmd: string): NormalizedToolName {
+  const c = cmd.trim();
+  if (/^(cat|head|tail|less|more|nl)\s/.test(c)) return "file_read";
+  if (/^rg\s.*--files/.test(c)) return "file_search";
+  if (/^(find|fd|ls)\s/.test(c)) return "file_search";
+  if (/^(rg|grep|ag|ack)\s/.test(c)) return "content_search";
+  return "terminal";
 }
 
 /** Drop codex's injected context blocks; keep the human prompt. */

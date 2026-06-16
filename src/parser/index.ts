@@ -6,9 +6,8 @@
 
 export type {
   Adapter,
-  StreamOptions,
   DiscoverOptions,
-  FindSessionContext,
+  DiscoverSpec,
 } from "./adapter.js";
 
 export {
@@ -21,6 +20,13 @@ export {
 } from "./registry.js";
 
 export { streamSession, discoverSessions } from "./stream.js";
+export type { StreamOptions } from "./stream.js";
 
-export { normalizeToolName } from "./tool-names.js";
-export { readFirstLine, readFirstLines } from "./read-lines.js";
+export {
+  readJsonValues,
+  readFirstJsonValue,
+  readFirstLine,
+  readFirstLines,
+} from "./read-lines.js";
+
+export { joinTextBlocks } from "./content.js";
