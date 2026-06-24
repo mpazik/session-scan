@@ -6,7 +6,16 @@
  * text + tool_use blocks, so it maps onto one `assistant_message` directly (no
  * cross-entry coalescing needed). Tool results arrive inside the *next* user
  * entry as `tool_result` blocks keyed by tool_use_id. Machinery lines
- * (attachments, modes, snapshots, sidechains, meta) are dropped.
+ * (attachments, modes, snapshots, meta) are dropped.
+ *
+ * Sidechain handling is keyed off the file's first line. A normal main-thread
+ * file has no sidechain lines (or treats any as machinery), so they are
+ * dropped. A sub-agent transcript is sidechain-only: its first line is a
+ * `type:"user"` entry with `isSidechain:true` and an `agentId`. When the first
+ * line is a sidechain we keep every line and synthesize the session id from
+ * `agentId` (sub-agents of one session all share the same `sessionId`), and
+ * link the sub-agent to its parent via `parentSession = sessionId` so callers
+ * can group every sub-agent under the main thread that spawned it.
  */
 
 import { join } from "path";
@@ -47,6 +56,10 @@ export default {
     // whole session.
     let start: SessionStartEvent | null = null;
     const held: SessionEvent[] = [];
+    // Decided from the first line: a sidechain-only file is a sub-agent
+    // transcript (keep every line); otherwise sidechain lines are machinery.
+    let keepSidechain = false;
+    let sniffed = false;
     function* flushStart(): Generator<SessionEvent> {
       if (!start) return;
       const s = start;
@@ -63,7 +76,11 @@ export default {
 
     for await (const value of readJsonValues(filePath)) {
       const raw = value as any;
-      if (raw.isSidechain === true) continue;
+      if (!sniffed) {
+        keepSidechain = raw.isSidechain === true;
+        sniffed = true;
+      }
+      if (!keepSidechain && raw.isSidechain === true) continue;
 
       const ts: string = raw.timestamp ?? "";
       const id: string = raw.uuid ?? `e${counter++}`;
@@ -73,11 +90,14 @@ export default {
       if (!headerSeen && typeof raw.cwd === "string" && raw.cwd) {
         const header: SessionMetadata = {
           agent: "claude-code",
-          id: raw.sessionId ?? "",
+          // Sub-agents share one sessionId; agentId disambiguates them, and the
+          // shared sessionId becomes the parent link for grouping.
+          id: raw.agentId ?? raw.sessionId ?? "",
           timestamp: ts,
           cwd: raw.cwd,
           model: raw.message?.model && raw.message.model !== "<synthetic>" ? String(raw.message.model) : undefined,
           git: raw.gitBranch ? { branch: raw.gitBranch } : undefined,
+          parentSession: raw.agentId && raw.sessionId ? String(raw.sessionId) : undefined,
         };
         headerSeen = true;
         start = { type: "session_start", formatVersion: FORMAT_VERSION, path: filePath, ...header };
@@ -188,7 +208,9 @@ export default {
 
   // Layout: <projects>/<cwd-slug>/<uuid>.jsonl. Filenames carry no timestamp
   // (framework falls back to mtime); cwd lives in the file, with the dir slug
-  // as fallback. Non-recursive, so subagents/ subdirs are skipped.
+  // as fallback. Non-recursive by default, so <slug>/subagents/ subdirs are
+  // skipped unless DiscoverOptions.includeSubagents is set (the framework's
+  // walker descends into `subagents/` then).
   discover: {
     match: (name) => name.endsWith(".jsonl"),
     cwdOf: (first, dirName) => String((first as any)?.cwd ?? "") || dirName,

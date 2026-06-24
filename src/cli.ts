@@ -15,7 +15,7 @@
  *   streamSession → withContext → filter → [scanner] → trim → render → sink
  *
  * Flags:
- *   locate    <input> | --cwd --since --until --source --adapter <path>...
+ *   locate    <input> | --cwd --since --until --source --include-subagents --adapter <path>...
  *   filter    --type a,b  --tool a,b  --error  --role user|assistant|tool_result
  *   scanner   --scanner ./file.ts            (runs after filter, replaces trim)
  *   trim      --tool-lines N  --no-thinking  (default path only)
@@ -50,6 +50,7 @@ const { values, positionals } = parseArgs({
     until: { type: "string" },
     source: { type: "string" },
     adapter: { type: "string", multiple: true },
+    "include-subagents": { type: "boolean", default: false },
     // filter
     type: { type: "string" },
     tool: { type: "string" },
@@ -104,6 +105,7 @@ const files: AsyncIterable<string> = input
       since: defaultSince(),
       until: values.until ? new Date(values.until) : undefined,
       source: values.source,
+      includeSubagents: values["include-subagents"],
     });
 
 // -- filter ------------------------------------------------------------------

@@ -39,6 +39,13 @@ export interface DiscoverOptions {
   since?: Date;
   /** Only yield files with timestamps on or before this date. */
   until?: Date;
+  /**
+   * Also descend into `subagents/` subdirectories (Claude Code writes
+   * sub-agent transcripts to `<slug>/subagents/agent-*.jsonl`). Off by default
+   * so standard discovery output is unchanged; harnesses without such dirs are
+   * unaffected.
+   */
+  includeSubagents?: boolean;
 }
 
 /**

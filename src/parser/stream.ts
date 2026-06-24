@@ -114,7 +114,13 @@ async function* walkSpec(
       const full = join(dir, entry.name);
       if (entry.isDirectory()) {
         // Default layout is storageDir/<dir>/<file>; recursive specs nest deeper.
-        if (spec.recursive || depth === 0) yield* walk(full, depth + 1);
+        // With includeSubagents, also descend one level into `subagents/` dirs
+        // (Claude Code stores sub-agent transcripts at <slug>/subagents/).
+        const descend =
+          spec.recursive ||
+          depth === 0 ||
+          (opts.includeSubagents === true && entry.name === "subagents");
+        if (descend) yield* walk(full, depth + 1);
         continue;
       }
       if (!spec.match(entry.name)) continue;
