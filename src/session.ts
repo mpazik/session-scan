@@ -137,6 +137,7 @@ export type SessionEvent =
   | SessionStartEvent
   | UserMessageEvent
   | AssistantMessageEvent
+  | SkillInvocationEvent
   | ToolResultEvent
   | CompactionEvent
   | ErrorEvent
@@ -153,6 +154,23 @@ export interface SessionStartEvent extends SessionMetadata {
 export interface UserMessageEvent extends SessionEventBase {
   type: "user_message";
   text: string;
+}
+
+/**
+ * A skill invocation explicitly recorded by the producing harness. Adapters
+ * emit this immediately after the canonical user/assistant event containing
+ * the native invocation and link back to it with `sourceEventId`.
+ */
+export interface SkillInvocationEvent extends SessionEventBase {
+  type: "skill_invocation";
+  /** Exact, case-sensitive skill identifier. */
+  name: string;
+  /** Path to SKILL.md when the harness records it. */
+  path?: string;
+  /** Invocation arguments other than name/path, when available. */
+  arguments?: Record<string, unknown>;
+  /** Canonical event containing the native invocation. */
+  sourceEventId?: string;
 }
 
 /**

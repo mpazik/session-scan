@@ -1,14 +1,17 @@
 /**
- * Semantic filter stage. Drops whole events; never edits payloads. Default
- * (no criteria) keeps everything. `session_start` always passes: it's structural
- * metadata the renderer needs for its per-session header, not filterable content.
+ * Semantic filter stage. Skill criteria select whole sessions; other criteria
+ * drop events without editing payloads. Default (no criteria) keeps everything.
+ * `session_start` always passes for a selected session because renderers need it.
  *
- * Provided criteria combine with AND — an event must satisfy every active one.
+ * Criteria combine with AND. Comma-separated values within one criterion use OR.
  */
 
 import type { ContextualEvent } from "../scanner.js";
+import { selectBySkillInvocation } from "./select-skill.js";
 
 export interface FilterCriteria {
+  /** Keep sessions invoking any of these exact skill names (`--skill`). */
+  skills?: string[];
   /** Keep only these event types (`--type`). */
   types?: string[];
   /** Keep only these roles (`--role`); maps onto event types. */
@@ -27,10 +30,26 @@ const ROLE_TO_TYPE: Record<string, string> = {
 
 /** True when at least one criterion is active. */
 export function hasFilters(c: FilterCriteria): boolean {
-  return !!(c.types?.length || c.roles?.length || c.tools?.length || c.error);
+  return !!(
+    c.skills?.length ||
+    c.types?.length ||
+    c.roles?.length ||
+    c.tools?.length ||
+    c.error
+  );
 }
 
-export async function* filter(
+export function filter(
+  events: AsyncGenerator<ContextualEvent>,
+  c: FilterCriteria,
+): AsyncGenerator<ContextualEvent> {
+  const selected = c.skills?.length
+    ? selectBySkillInvocation(events, c.skills)
+    : events;
+  return filterEvents(selected, c);
+}
+
+async function* filterEvents(
   events: AsyncGenerator<ContextualEvent>,
   c: FilterCriteria,
 ): AsyncGenerator<ContextualEvent> {

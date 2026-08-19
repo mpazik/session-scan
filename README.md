@@ -25,7 +25,7 @@ session-scan <input | discover-flags>
   → locate          --cwd / --since / --until / --source / --adapter
   → streamSession   auto-detect harness → canonical SessionEvent
   → withContext     always on: turn / prevTurn / active model
-  → filter          --type / --tool / --error / --role     (default: keep all)
+  → filter          --skill / --type / --tool / --error / --role  (default: keep all)
   → [scanner]       --scanner ./file.ts                    (optional, replaces trim)
   → trim            --tool-lines N / --no-thinking         (default: full payloads)
   → render          ndjson (default) | --format md
@@ -45,13 +45,16 @@ Sessions are flattened into one output stream; every NDJSON line carries a `sid`
 | `--since` / `--until` | locate | last 7 days / open |
 | `--source <name>` | locate | all adapters |
 | `--adapter <path>` (repeatable) | locate | built-ins + `~/.session-scan/adapters/` |
-| `--type a,b` / `--tool a,b` / `--error` / `--role r` | filter | keep all |
+| `--skill <name[,name...]>` | filter | keep all sessions |
+| `--type a,b` / `--tool a,b` / `--error` / `--role r` | filter | keep all events |
 | `--scanner <path>` | scanner | none |
 | `--tool-lines N` / `--no-thinking` | trim | full payloads |
 | `--format md` | render | ndjson |
 | `--out <file>` / `--out-dir <dir>` | sink | stdout |
 
-Filter values: `--type` takes event types (`user_message`, `assistant_message`, `tool_result`, `compaction`, `error`, `custom_message`), `--tool` takes normalized tool names (`terminal`, `file_read`, `file_edit`, ...), `--role` takes `user` / `assistant` / `tool_result`. Criteria combine with AND.
+`--skill` selects complete transcripts containing a canonical `skill_invocation` event. Names are exact and case-sensitive. Comma-separated names use OR semantics. This session criterion combines with event filters using AND, but it does not remove the surrounding conversation. Normalization is adapter-owned: Pi maps its injected `<skill ...>` user envelope, while Claude Code and Codex map a dedicated `Skill` tool call when the host records one. Available-skill catalogs and incidental `SKILL.md` reads do not count.
+
+Filter values: `--type` takes event types (`user_message`, `assistant_message`, `skill_invocation`, `tool_result`, `compaction`, `error`, `custom_message`), `--tool` takes normalized tool names (`terminal`, `file_read`, `file_edit`, ...), `--role` takes `user` / `assistant` / `tool_result`. Event filter criteria combine with AND.
 
 ## Examples
 
@@ -61,6 +64,12 @@ bun src/cli.ts test/fixtures/pi.jsonl
 
 # readable transcript of recent binder sessions, slim
 bun src/cli.ts --cwd binder --format md --tool-lines 1 --no-thinking
+
+# full transcripts where a skill was invoked
+session-scan --cwd journal --skill recruiter-replay --format md
+
+# any of several skills (OR), then keep only assistant events
+session-scan --cwd all --skill recruiter-replay,copywriting --type assistant_message --format md
 
 # one markdown file per session
 bun src/cli.ts --cwd binder --format md --out-dir tmp/transcripts
@@ -86,6 +95,7 @@ Every adapter produces the same `SessionEvent` union (see `src/session.ts`):
 - `session_start`: metadata (id, timestamp, cwd, agent, model, git, parentSession)
 - `user_message`: the prompt
 - `assistant_message`: one model response; holds `text`, `thinking`, `toolCalls[]`, and `usage` (the response is the billing unit)
+- `skill_invocation`: adapter-normalized skill name, optional path and arguments, linked to its source event
 - `tool_result`: paired to its call by `toolCallId`; carries `isError` and `exitCode`
 - `compaction`, `error`: context compaction and harness-level errors
 - `custom_message`: escape hatch for harness-specific entries
@@ -123,7 +133,7 @@ Scanners run after `filter` and replace `trim` (they own their own trimming). Th
 
 ## Adapters
 
-One adapter per harness; the only place that understands a native on-disk format. An adapter answers four questions: is this file mine (`detect`), where do my sessions live (`discover`, `storageDir`), and how does one file become canonical events (`parse`).
+One adapter per harness; the only place that understands a native on-disk format. An adapter detects its files (`detect`), locates sessions (`discover`, `storageDir`), and maps native data into canonical events (`parse`), including `skill_invocation` when the harness records one. The core selector never parses harness-specific envelopes or tool calls.
 
 - **Built-in:** Claude Code, Codex, Claude Code `/export` (`src/adapters/`)
 - **Yours:** drop a module in `~/.session-scan/adapters/` or pass `--adapter <path>`

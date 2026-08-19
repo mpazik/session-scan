@@ -16,7 +16,7 @@
  *
  * Flags:
  *   locate    <input> | --cwd --since --until --source --include-subagents --adapter <path>...
- *   filter    --type a,b  --tool a,b  --error  --role user|assistant|tool_result
+ *   filter    --skill a,b  --type a,b  --tool a,b  --error  --role user|assistant|tool_result
  *   scanner   --scanner ./file.ts            (runs after filter, replaces trim)
  *   trim      --tool-lines N  --no-thinking  (default path only)
  *   render    --format md                    (ndjson default)
@@ -25,6 +25,7 @@
  * Examples:
  *   scan test/fixtures/pi.jsonl
  *   scan --cwd binder --format md --tool-lines 1 --no-thinking
+ *   session-scan --cwd journal --skill recruiter-replay --format md
  *   scan --cwd binder --format md --out-dir tmp/transcripts
  *   scan --cwd all --error --type tool_result --out tmp/errors.jsonl
  *   scan --cwd binder --scanner ./examples/scanners/binder-failures.ts
@@ -54,6 +55,7 @@ const { values, positionals } = parseArgs({
     // filter
     type: { type: "string" },
     tool: { type: "string" },
+    skill: { type: "string" },
     error: { type: "boolean", default: false },
     role: { type: "string" },
     // scanner
@@ -117,6 +119,7 @@ const roles = values.role
   .filter((r) => ROLES.has(r)) as FilterCriteria["roles"];
 
 const filter: FilterCriteria = {
+  skills: values.skill?.split(",").map((s) => s.trim()).filter(Boolean),
   types: values.type?.split(",").map((s) => s.trim()),
   tools: values.tool?.split(",").map((s) => s.trim()),
   error: values.error,

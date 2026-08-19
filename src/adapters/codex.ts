@@ -8,7 +8,7 @@
  *
  * `token_count` event_msgs carry per-response `last_token_usage`; they are
  * collected in order and zipped onto the flushed assistant messages. Codex is
- * linear, so ids are a synthesized counter and parentId is always null.
+ * linear, so native ids are synthesized and parentId is normally null.
  */
 
 import { join } from "path";
@@ -19,6 +19,7 @@ import type {
   Thinking,
   TokenUsage,
   AssistantMessageEvent,
+  SkillInvocationEvent,
   NormalizedToolName,
 } from "../session.js";
 import { FORMAT_VERSION } from "../session.js";
@@ -66,6 +67,18 @@ export default {
       };
       events.push(msg);
       assistantMsgs.push(msg);
+      for (const call of msg.toolCalls) {
+        const skill = skillInvocationFromCodexTool(call);
+        if (!skill) continue;
+        events.push({
+          type: "skill_invocation",
+          id: nextId(),
+          parentId: msg.id,
+          timestamp: msg.timestamp,
+          sourceEventId: msg.id,
+          ...skill,
+        });
+      }
       pending = null;
     };
 
@@ -193,6 +206,27 @@ export default {
 } satisfies Adapter;
 
 // -- helpers -----------------------------------------------------------------
+
+/** Recognize a dedicated skill tool when the Codex host records one. */
+export function skillInvocationFromCodexTool(
+  call: ToolCall,
+): Pick<SkillInvocationEvent, "name" | "path" | "arguments"> | null {
+  if (call.name !== "Skill") return null;
+  const { skill, name, path, location, ...args } = call.arguments;
+  const invokedName = skill ?? name;
+  if (typeof invokedName !== "string" || !invokedName) return null;
+  const recordedPath =
+    typeof path === "string"
+      ? path
+      : typeof location === "string"
+        ? location
+        : undefined;
+  return {
+    name: invokedName,
+    ...(recordedPath ? { path: recordedPath } : {}),
+    ...(Object.keys(args).length > 0 ? { arguments: args } : {}),
+  };
+}
 
 /**
  * Codex tool names -> harness-neutral canonical names. Codex routes everything

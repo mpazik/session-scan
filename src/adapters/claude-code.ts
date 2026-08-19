@@ -20,7 +20,15 @@
 
 import { join } from "path";
 import { homedir } from "os";
-import type { SessionEvent, SessionStartEvent, SessionMetadata, ToolCall, Thinking, TokenUsage } from "../session.js";
+import type {
+  SessionEvent,
+  SessionStartEvent,
+  SessionMetadata,
+  SkillInvocationEvent,
+  ToolCall,
+  Thinking,
+  TokenUsage,
+} from "../session.js";
 import { FORMAT_VERSION } from "../session.js";
 import type { Adapter } from "../parser/adapter.js";
 import { readJsonValues } from "../parser/read-lines.js";
@@ -181,6 +189,19 @@ export default {
             usage: extractUsage(raw.message?.usage),
             timestamp: ts,
           };
+          for (let i = 0; i < toolCalls.length; i++) {
+            const call = toolCalls[i]!;
+            const skill = skillInvocationFromClaudeTool(call);
+            if (!skill) continue;
+            yield {
+              type: "skill_invocation",
+              id: `${id}:skill:${call.id || i}`,
+              parentId: id,
+              timestamp: ts,
+              sourceEventId: id,
+              ...skill,
+            };
+          }
         }
         continue;
       }
@@ -218,6 +239,26 @@ export default {
 } satisfies Adapter;
 
 // -- helpers -----------------------------------------------------------------
+
+/** Claude Code records explicit skill use as an assistant `Skill` tool call. */
+export function skillInvocationFromClaudeTool(
+  call: ToolCall,
+): Pick<SkillInvocationEvent, "name" | "path" | "arguments"> | null {
+  if (call.name !== "Skill") return null;
+  const { skill, path, location, ...args } = call.arguments;
+  if (typeof skill !== "string" || !skill) return null;
+  const recordedPath =
+    typeof path === "string"
+      ? path
+      : typeof location === "string"
+        ? location
+        : undefined;
+  return {
+    name: skill,
+    ...(recordedPath ? { path: recordedPath } : {}),
+    ...(Object.keys(args).length > 0 ? { arguments: args } : {}),
+  };
+}
 
 /** tool_result content: string or array of {type:text,text}. */
 function blockText(content: unknown): string {

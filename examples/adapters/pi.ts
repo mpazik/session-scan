@@ -8,10 +8,10 @@
  *
  * The contract is mostly declarative; the framework does the generic work.
  * `toolNames` maps native tool names onto canonical ones (the framework
- * stamps `toolCall.normalizedName`), `discover` describes the storage layout
- * (the framework walks it and applies cwd/date filters), and `detect` checks
- * the first JSON value (the framework reads it). Only `parse` has real code:
- * pure format mapping, no filter logic.
+ * stamps `toolCall.normalizedName`), `parse` maps Pi's skill envelope to a
+ * canonical `skill_invocation`, `discover` describes the storage layout (the
+ * framework walks it and applies cwd/date filters), and `detect` checks the
+ * first JSON value (the framework reads it).
  *
  * Pi's on-disk shape is already close to the canonical model: assistant
  * entries embed `toolCall`/`text` blocks, so they map onto one
@@ -25,7 +25,14 @@
  */
 
 import { join } from "path";
-import type { SessionEvent, SessionStartEvent, SessionMetadata, ToolCall, TokenUsage } from "../../src/session.js";
+import type {
+  SessionEvent,
+  SessionStartEvent,
+  SessionMetadata,
+  SkillInvocationEvent,
+  ToolCall,
+  TokenUsage,
+} from "../../src/session.js";
 import { FORMAT_VERSION } from "../../src/session.js";
 import type { Adapter } from "../../src/parser/adapter.js";
 import { readJsonValues } from "../../src/parser/read-lines.js";
@@ -96,7 +103,19 @@ export default {
         if (!msg) continue;
 
         if (msg.role === "user") {
-          yield* out({ type: "user_message", id, parentId, text: joinTextBlocks(msg.content), timestamp });
+          const text = joinTextBlocks(msg.content);
+          yield* out({ type: "user_message", id, parentId, text, timestamp });
+          const skill = parsePiSkillInvocation(text);
+          if (skill) {
+            yield* out({
+              type: "skill_invocation",
+              id: `${id}:skill`,
+              parentId: id,
+              timestamp,
+              sourceEventId: id,
+              ...skill,
+            });
+          }
         } else if (msg.role === "assistant") {
           const content = msg.content ?? [];
           const toolCalls: ToolCall[] = [];
@@ -159,6 +178,83 @@ export default {
 } satisfies Adapter;
 
 // -- helpers -----------------------------------------------------------------
+
+/** Pi injects invoked skill content as a leading XML-like user envelope. */
+export function parsePiSkillInvocation(
+  text: string,
+): Pick<SkillInvocationEvent, "name" | "path"> | null {
+  const attrs = parseOpeningSkillElement(text);
+  if (!attrs) return null;
+
+  const name = attrs.get("name");
+  const path = attrs.get("location");
+  if (name === undefined || path === undefined) return null;
+  if (!/(?:^|[\\/])SKILL\.md$/.test(path)) return null;
+  return { name, path };
+}
+
+function parseOpeningSkillElement(text: string): Map<string, string> | null {
+  let pos = 0;
+  while (pos < text.length && isXmlWhitespace(text[pos]!)) pos++;
+  if (!text.startsWith("<skill", pos)) return null;
+  pos += "<skill".length;
+
+  const tagBoundary = text[pos];
+  if (
+    tagBoundary !== ">" &&
+    tagBoundary !== "/" &&
+    !isXmlWhitespace(tagBoundary)
+  ) {
+    return null;
+  }
+
+  const attrs = new Map<string, string>();
+  while (pos < text.length) {
+    const boundaryStart = pos;
+    while (pos < text.length && isXmlWhitespace(text[pos]!)) pos++;
+
+    if (text[pos] === ">") return attrs;
+    if (text[pos] === "/" && text[pos + 1] === ">") return attrs;
+    if (pos === boundaryStart) return null;
+
+    const nameStart = pos;
+    if (!isXmlNameStart(text[pos])) return null;
+    pos++;
+    while (pos < text.length && isXmlNameChar(text[pos]!)) pos++;
+    const attrName = text.slice(nameStart, pos);
+
+    while (pos < text.length && isXmlWhitespace(text[pos]!)) pos++;
+    if (text[pos] !== "=") return null;
+    pos++;
+    while (pos < text.length && isXmlWhitespace(text[pos]!)) pos++;
+
+    const quote = text[pos];
+    if (quote !== '"' && quote !== "'") return null;
+    pos++;
+    const valueStart = pos;
+    while (pos < text.length && text[pos] !== quote) pos++;
+    if (pos >= text.length) return null;
+    const value = text.slice(valueStart, pos);
+    pos++;
+
+    if (attrs.has(attrName)) return null;
+    attrs.set(attrName, value);
+  }
+
+  return null;
+}
+
+function isXmlWhitespace(char: string | undefined): boolean {
+  return char === " " || char === "\t" || char === "\r" || char === "\n";
+}
+
+function isXmlNameStart(char: string | undefined): boolean {
+  return char !== undefined && /[A-Za-z_:]/.test(char);
+}
+
+function isXmlNameChar(char: string): boolean {
+  return /[A-Za-z0-9_.:-]/.test(char);
+}
 
 /** Pi usage: cache buckets are already separate; `cost.total` is precomputed. */
 function extractUsage(usage: any): TokenUsage | undefined {

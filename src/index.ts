@@ -54,6 +54,7 @@ export type {
   SessionStartEvent,
   UserMessageEvent,
   AssistantMessageEvent,
+  SkillInvocationEvent,
   ToolResultEvent,
   CompactionEvent,
   ErrorEvent,

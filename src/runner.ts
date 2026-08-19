@@ -67,18 +67,41 @@ export async function run(opts: RunOptions): Promise<RunStats> {
   else if (opts.sink.kind === "file") shared = await openFileSink(opts.sink.path);
 
   for await (const file of opts.files) {
-    const stream = filter(
-      withContext(streamSession(file, { source: opts.source })),
-      opts.filter,
-    );
+    let it: AsyncIterator<ContextualEvent>;
+    let startEv: ContextualEvent & { type: "session_start" };
 
-    // Peek session_start off the front (filter guarantees it passes first).
-    const it = stream[Symbol.asyncIterator]();
-    const head = await it.next();
-    if (head.done) continue; // adapter filtered the file out
-    const startEv = head.value;
-    if (startEv.type !== "session_start") continue; // malformed; skip
-    stats.sessionsFound++;
+    if (opts.filter.skills?.length) {
+      const contextual = withContext(
+        streamSession(file, { source: opts.source }),
+      );
+      const sourceIt = contextual[Symbol.asyncIterator]();
+      const sourceHead = await sourceIt.next();
+      if (sourceHead.done) continue; // adapter filtered the file out
+      if (sourceHead.value.type !== "session_start") continue; // malformed; skip
+      stats.sessionsFound++;
+
+      const filtered = filter(
+        prepend(sourceHead.value, drain(sourceIt)),
+        opts.filter,
+      );
+      it = filtered[Symbol.asyncIterator]();
+      const selectedHead = await it.next();
+      if (selectedHead.done) continue; // skill did not occur in this session
+      if (selectedHead.value.type !== "session_start") continue;
+      startEv = selectedHead.value;
+    } else {
+      // Preserve the original streaming path when session selection is absent.
+      const stream = filter(
+        withContext(streamSession(file, { source: opts.source })),
+        opts.filter,
+      );
+      it = stream[Symbol.asyncIterator]();
+      const head = await it.next();
+      if (head.done) continue; // adapter filtered the file out
+      if (head.value.type !== "session_start") continue; // malformed; skip
+      stats.sessionsFound++;
+      startEv = head.value;
+    }
 
     const session = toMetadata(startEv);
     const sid = session.id || basename(file, extname(file));

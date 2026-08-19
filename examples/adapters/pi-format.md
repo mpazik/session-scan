@@ -39,6 +39,15 @@ The `id`/`parentId` fields form a tree (not a flat list). Branching creates sibl
 {"type":"message", "id":"...", "parentId":"...", "timestamp":"...", "message":{"role":"user", "content":[{"type":"text","text":"..."}], "timestamp":1234}}
 ```
 
+Pi injects invoked skill instructions as a user message beginning with:
+
+```xml
+<skill name="copywriting" location="/path/to/copywriting/SKILL.md">
+```
+
+The reference adapter preserves that `user_message` and immediately emits a
+canonical `skill_invocation` containing the exact name and path.
+
 #### role: assistant
 ```json
 {"type":"message", "id":"...", "parentId":"...", "timestamp":"...", "message":{

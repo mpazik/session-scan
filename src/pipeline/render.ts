@@ -57,6 +57,14 @@ function mdBlock(ev: Record<string, unknown> & { type: string }, sid: string): s
       }
       return parts.join("\n\n");
     }
+    case "skill_invocation": {
+      const parts = [`### skill · ${e.name ?? ""}`];
+      if (e.path) parts.push(`\`${e.path}\``);
+      if (e.arguments && Object.keys(e.arguments).length > 0) {
+        parts.push(`\`\`\`yaml\n${yamlBlock(e.arguments)}\n\`\`\``);
+      }
+      return parts.join("\n\n");
+    }
     case "tool_result": {
       const tag = e.isError ? " [error]" : "";
       return `### tool_result${tag}\n\n\`\`\`\n${e.content ?? ""}\n\`\`\``;
