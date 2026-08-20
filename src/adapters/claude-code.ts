@@ -33,6 +33,7 @@ import { FORMAT_VERSION } from "../session.js";
 import type { Adapter } from "../parser/adapter.js";
 import { readJsonValues } from "../parser/read-lines.js";
 import { joinTextBlocks } from "../parser/content.js";
+import { selectHeadPath, type NativeTreeEntry } from "../parser/select-head.js";
 
 const PROJECTS_DIR = join(homedir(), ".claude", "projects");
 
@@ -54,7 +55,7 @@ export default {
     Task: "sub_agent",
   },
 
-  async *parse(filePath) {
+  async *parse(filePath, headId?: string) {
     const callNames = new Map<string, string>(); // tool_use_id -> tool name
     let headerSeen = false;
     let counter = 0;
@@ -82,7 +83,10 @@ export default {
       else yield ev;
     }
 
-    for await (const value of readJsonValues(filePath)) {
+    const values = headId
+      ? readClaudeHeadValues(filePath, headId)
+      : readJsonValues(filePath);
+    for await (const value of values) {
       const raw = value as any;
       if (!sniffed) {
         keepSidechain = raw.isSidechain === true;
@@ -220,6 +224,14 @@ export default {
     yield* flushStart();
   },
 
+  async *parseHead(filePath, headId) {
+    if (!headId.trim()) throw new Error("head ID must not be empty");
+    yield* (this.parse as (
+      path: string,
+      selectedHead?: string,
+    ) => AsyncGenerator<SessionEvent>)(filePath, headId);
+  },
+
   detect(first) {
     // No header line; a `sessionId` on the first parseable value is reliable
     // (pi has none; codex wraps everything in a `payload`).
@@ -239,6 +251,36 @@ export default {
 } satisfies Adapter;
 
 // -- helpers -----------------------------------------------------------------
+
+type ClaudeTreeEntry = NativeTreeEntry & Record<string, unknown>;
+
+/** Claude Code head IDs are stable native `uuid` values. */
+async function* readClaudeHeadValues(
+  filePath: string,
+  headId: string,
+): AsyncGenerator<unknown> {
+  const entries: ClaudeTreeEntry[] = [];
+  let found = false;
+
+  for await (const value of readJsonValues(filePath)) {
+    const raw = value as Record<string, unknown>;
+    if (typeof raw.uuid !== "string") continue;
+    entries.push({
+      ...raw,
+      id: raw.uuid,
+      parentId: typeof raw.parentUuid === "string" ? raw.parentUuid : null,
+    });
+    if (raw.uuid === headId) {
+      found = true;
+      break;
+    }
+  }
+
+  if (!found) {
+    throw new Error(`head "${headId}" was not found in ${filePath}`);
+  }
+  yield* selectHeadPath(entries, headId);
+}
 
 /** Claude Code records explicit skill use as an assistant `Skill` tool call. */
 export function skillInvocationFromClaudeTool(

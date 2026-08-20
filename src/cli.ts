@@ -12,10 +12,12 @@
  *   scan --cwd binder --format md ...    readable transcripts of recent sessions
  *
  * Pipeline (per session):
- *   streamSession → withContext → filter → [scanner] → trim → render → sink
+ *   locate → adapter parse/head selection → withContext → filter
+ *     → [scanner] → trim → render → sink
  *
  * Flags:
  *   locate    <input> | --cwd --since --until --source --include-subagents --adapter <path>...
+ *   parse     --head <entry-id>              (requires one positional input)
  *   filter    --skill a,b  --type a,b  --tool a,b  --error  --role user|assistant|tool_result
  *   scanner   --scanner ./file.ts            (runs after filter, replaces trim)
  *   trim      --tool-lines N  --no-thinking  (default path only)
@@ -24,6 +26,7 @@
  *
  * Examples:
  *   scan test/fixtures/pi.jsonl
+ *   scan ~/.pi/agent/sessions/.../session.jsonl --head a1b2c3d4 --format md
  *   scan --cwd binder --format md --tool-lines 1 --no-thinking
  *   session-scan --cwd journal --skill recruiter-replay --format md
  *   scan --cwd binder --format md --out-dir tmp/transcripts
@@ -52,6 +55,8 @@ const { values, positionals } = parseArgs({
     source: { type: "string" },
     adapter: { type: "string", multiple: true },
     "include-subagents": { type: "boolean", default: false },
+    // parse
+    head: { type: "string" },
     // filter
     type: { type: "string" },
     tool: { type: "string" },
@@ -73,6 +78,15 @@ const { values, positionals } = parseArgs({
 });
 
 const input = positionals[0];
+const head = values.head?.trim();
+if (values.head !== undefined) {
+  if (positionals.length !== 1) {
+    throw new Error("--head requires a positional session file");
+  }
+  if (!head || head === "null") {
+    throw new Error("--head requires a non-empty, non-null entry ID");
+  }
+}
 
 // Load adapters: built-in + user + --adapter, plus the bundled pi reference
 // adapter so its files auto-detect (pi is not built in).
@@ -156,6 +170,7 @@ const t0 = performance.now();
 const stats = await run({
   files,
   source: values.source,
+  head,
   filter,
   scanner,
   trim,

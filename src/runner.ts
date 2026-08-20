@@ -4,7 +4,8 @@
  * so sessions stay separable without downstream state.
  *
  * Per session:
- *   streamSession → withContext → filter → [scanner] → trim → render → sink
+ *   adapter parse/head selection → withContext → filter
+ *     → [scanner] → trim → render → sink
  *
  * `session_start` is peeked off the front: its metadata becomes the scanner's
  * `session` arg and the render header, and it is re-prepended into the render
@@ -40,6 +41,8 @@ export interface RunOptions {
   files: AsyncIterable<string>;
   /** Skip harness detection when set. */
   source?: string;
+  /** Adapter-native inclusive session head. */
+  head?: string;
   filter: FilterCriteria;
   /** Optional; runs after filter, replaces trim. */
   scanner?: Scanner;
@@ -72,7 +75,7 @@ export async function run(opts: RunOptions): Promise<RunStats> {
 
     if (opts.filter.skills?.length) {
       const contextual = withContext(
-        streamSession(file, { source: opts.source }),
+        streamSession(file, { source: opts.source, head: opts.head }),
       );
       const sourceIt = contextual[Symbol.asyncIterator]();
       const sourceHead = await sourceIt.next();
@@ -92,7 +95,7 @@ export async function run(opts: RunOptions): Promise<RunStats> {
     } else {
       // Preserve the original streaming path when session selection is absent.
       const stream = filter(
-        withContext(streamSession(file, { source: opts.source })),
+        withContext(streamSession(file, { source: opts.source, head: opts.head })),
         opts.filter,
       );
       it = stream[Symbol.asyncIterator]();

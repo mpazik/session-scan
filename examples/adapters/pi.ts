@@ -37,6 +37,7 @@ import { FORMAT_VERSION } from "../../src/session.js";
 import type { Adapter } from "../../src/parser/adapter.js";
 import { readJsonValues } from "../../src/parser/read-lines.js";
 import { joinTextBlocks } from "../../src/parser/content.js";
+import { selectHeadPath, type NativeTreeEntry } from "../../src/parser/select-head.js";
 
 const SESSIONS_DIR = join(process.env.HOME || "~", ".pi", "agent", "sessions");
 
@@ -55,7 +56,7 @@ export default {
     grep: "content_search",
   },
 
-  async *parse(filePath) {
+  async *parse(filePath, headId?: string) {
     let headerSeen = false;
     // Hold session_start until the model is known (pi's leading model_change)
     // or the first message arrives. Preamble events buffer in `held`.
@@ -77,7 +78,10 @@ export default {
       yield ev;
     }
 
-    for await (const value of readJsonValues(filePath)) {
+    const values = headId
+      ? readPiHeadValues(filePath, headId)
+      : readJsonValues(filePath);
+    for await (const value of values) {
       const raw = value as any;
 
       if (raw.type === "session") {
@@ -162,6 +166,14 @@ export default {
     yield* flushStart();
   },
 
+  async *parseHead(filePath, headId) {
+    if (!headId.trim()) throw new Error("head ID must not be empty");
+    yield* (this.parse as (
+      path: string,
+      selectedHead?: string,
+    ) => AsyncGenerator<SessionEvent>)(filePath, headId);
+  },
+
   detect(first) {
     const f = first as any;
     return f?.type === "session" && typeof f.id === "string" && typeof f.cwd === "string" && f.payload == null;
@@ -178,6 +190,42 @@ export default {
 } satisfies Adapter;
 
 // -- helpers -----------------------------------------------------------------
+
+type PiTreeEntry = NativeTreeEntry & Record<string, unknown>;
+
+/** Pi head IDs are stable native entry `id` values, including skipped entries. */
+async function* readPiHeadValues(
+  filePath: string,
+  headId: string,
+): AsyncGenerator<unknown> {
+  const headers: unknown[] = [];
+  const entries: PiTreeEntry[] = [];
+  let found = false;
+
+  for await (const value of readJsonValues(filePath)) {
+    const raw = value as Record<string, unknown>;
+    if (raw.type === "session") {
+      headers.push(value);
+      continue;
+    }
+    if (typeof raw.id !== "string") continue;
+    entries.push({
+      ...raw,
+      id: raw.id,
+      parentId: typeof raw.parentId === "string" ? raw.parentId : null,
+    });
+    if (raw.id === headId) {
+      found = true;
+      break;
+    }
+  }
+
+  if (!found) {
+    throw new Error(`head "${headId}" was not found in ${filePath}`);
+  }
+  for (const header of headers) yield header;
+  yield* selectHeadPath(entries, headId);
+}
 
 /** Pi injects invoked skill content as a leading XML-like user envelope. */
 export function parsePiSkillInvocation(

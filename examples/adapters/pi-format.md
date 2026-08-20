@@ -20,7 +20,18 @@ The directory name encodes the cwd: `/Users/foo/src/bar` becomes `--Users-foo-sr
 {"type":"...", "id":"8hexchars", "parentId":"8hexchars|null", "timestamp":"iso", ...}
 ```
 
-The `id`/`parentId` fields form a tree (not a flat list). Branching creates siblings under the same parent.
+The `id`/`parentId` fields form a tree (not a flat list). Branching creates siblings under the same parent. These native entry IDs are accepted by `session-scan --head <entry-id>`.
+
+Pi feedback records retain the active branch head as `leafId` and the source log as `sessionFile`. Although that field remains named `leafId`, the entry can gain descendants later. Pass it as the session-scan head to reproduce the history active when feedback was recorded:
+
+```bash
+record=$(tail -n 1 ~/.pi/agent/feedback.jsonl)
+sessionFile=$(jq -r .sessionFile <<<"$record")
+headId=$(jq -r .leafId <<<"$record")
+session-scan "$sessionFile" --head "$headId" --format md
+```
+
+Selection includes the head and its native ancestors. It excludes sibling branches and later descendants. IDs of bookkeeping entries such as `custom`, `label`, or `branch_summary` are valid even when those entries do not map to canonical events.
 
 ### model_change
 ```json

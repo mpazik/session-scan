@@ -16,6 +16,8 @@
  *   - parse:      turn one native file into a stream of canonical
  *                 SessionEvents. Pure format mapping: no filter logic, no
  *                 tool-name normalization.
+ *   - parseHead:  optionally select native history through one adapter-owned
+ *                 entry ID before mapping it to canonical events.
  *   - toolNames:  native -> canonical tool-name mapping; the framework stamps
  *                 `toolCall.normalizedName` on every assistant_message.
  *   - storageDir: where this harness stores sessions for a given cwd.
@@ -96,6 +98,17 @@ export interface Adapter {
 
   /** Stream canonical SessionEvents from a known session file. */
   parse(filePath: string): AsyncGenerator<SessionEvent>;
+
+  /**
+   * Stream only the native history ending at `headId`, inclusively. Adapters
+   * that omit this method explicitly do not support head selection. Selection
+   * happens before canonical mapping so skipped and expanded native entries
+   * retain their ancestry semantics.
+   */
+  parseHead?(
+    filePath: string,
+    headId: string,
+  ): AsyncGenerator<SessionEvent>;
 
   /** Storage layout spec, or a custom discovery generator as escape hatch. */
   discover: DiscoverSpec | ((opts?: DiscoverOptions) => AsyncGenerator<string>);

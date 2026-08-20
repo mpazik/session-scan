@@ -3,7 +3,7 @@
   "module": "index.ts",
   "type": "module",
   "scripts": {
-    "test": "bun test src"
+    "test": "bun test src test/integration"
   },
   "private": true,
   "devDependencies": {

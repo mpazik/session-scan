@@ -23,7 +23,7 @@ Deliberately out of scope:
 ```
 session-scan <input | discover-flags>
   → locate          --cwd / --since / --until / --source / --adapter
-  → streamSession   auto-detect harness → canonical SessionEvent
+  → adapter parse   auto-detect harness / --head <entry-id> → canonical SessionEvent
   → withContext     always on: turn / prevTurn / active model
   → filter          --skill / --type / --tool / --error / --role  (default: keep all)
   → [scanner]       --scanner ./file.ts                    (optional, replaces trim)
@@ -45,12 +45,15 @@ Sessions are flattened into one output stream; every NDJSON line carries a `sid`
 | `--since` / `--until` | locate | last 7 days / open |
 | `--source <name>` | locate | all adapters |
 | `--adapter <path>` (repeatable) | locate | built-ins + `~/.session-scan/adapters/` |
+| `--head <entry-id>` | parse | complete session |
 | `--skill <name[,name...]>` | filter | keep all sessions |
 | `--type a,b` / `--tool a,b` / `--error` / `--role r` | filter | keep all events |
 | `--scanner <path>` | scanner | none |
 | `--tool-lines N` / `--no-thinking` | trim | full payloads |
 | `--format md` | render | ndjson |
 | `--out <file>` / `--out-dir <dir>` | sink | stdout |
+
+`--head` requires one positional session file and selects the native history ending at that entry, inclusively. Pi accepts native `id` values and Claude Code accepts native `uuid` values. Tree adapters emit only the selected entry's ancestor branch, so sibling branches and entries appended after the head are excluded. Codex and Claude text exports currently reject head selection rather than returning the full session.
 
 `--skill` selects complete transcripts containing a canonical `skill_invocation` event. Names are exact and case-sensitive. Comma-separated names use OR semantics. This session criterion combines with event filters using AND, but it does not remove the surrounding conversation. Normalization is adapter-owned: Pi maps its injected `<skill ...>` user envelope, while Claude Code and Codex map a dedicated `Skill` tool call when the host records one. Available-skill catalogs and incidental `SKILL.md` reads do not count.
 
@@ -64,6 +67,12 @@ bun src/cli.ts test/fixtures/pi.jsonl
 
 # readable transcript of recent binder sessions, slim
 bun src/cli.ts --cwd binder --format md --tool-lines 1 --no-thinking
+
+# reproduce the Pi branch active when the latest feedback was recorded
+record=$(tail -n 1 ~/.pi/agent/feedback.jsonl)
+sessionFile=$(jq -r .sessionFile <<<"$record")
+headId=$(jq -r .leafId <<<"$record")
+session-scan "$sessionFile" --head "$headId" --format md
 
 # full transcripts where a skill was invoked
 session-scan --cwd journal --skill recruiter-replay --format md
@@ -133,7 +142,7 @@ Scanners run after `filter` and replace `trim` (they own their own trimming). Th
 
 ## Adapters
 
-One adapter per harness; the only place that understands a native on-disk format. An adapter detects its files (`detect`), locates sessions (`discover`, `storageDir`), and maps native data into canonical events (`parse`), including `skill_invocation` when the harness records one. The core selector never parses harness-specific envelopes or tool calls.
+One adapter per harness; the only place that understands a native on-disk format. An adapter detects its files (`detect`), locates sessions (`discover`, `storageDir`), and maps native data into canonical events (`parse`), including `skill_invocation` when the harness records one. Adapters can implement `parseHead` to select native ancestry before canonical mapping. The core selector never parses harness-specific envelopes, ancestry, or tool calls.
 
 - **Built-in:** Claude Code, Codex, Claude Code `/export` (`src/adapters/`)
 - **Yours:** drop a module in `~/.session-scan/adapters/` or pass `--adapter <path>`
@@ -155,6 +164,13 @@ for await (const file of discoverSessions({ cwdFilter: "binder" })) {
   for await (const ev of withContext(streamSession(file))) {
     // canonical events with turn context, regardless of harness
   }
+}
+
+// Adapter-owned inclusive selection for one known session file:
+for await (const ev of streamSession("/path/to/pi-session.jsonl", {
+  head: "a1b2c3d4",
+})) {
+  // only the native branch through a1b2c3d4
 }
 ```
 

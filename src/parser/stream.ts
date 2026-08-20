@@ -28,6 +28,8 @@ export interface StreamOptions {
   until?: Date;
   /** Skip the session if its cwd does not contain this substring (case-insensitive). */
   cwdFilter?: string;
+  /** Emit native session history ending at this adapter-owned entry ID. */
+  head?: string;
 }
 
 /**
@@ -48,7 +50,17 @@ export async function* streamSession(
   }
 
   const normalize = toolNormalizer(source);
-  for await (const ev of source.parse(filePath)) {
+  const selectingHead = opts.head !== undefined;
+  if (selectingHead && !opts.head?.trim()) {
+    throw new Error("head ID must not be empty");
+  }
+  if (selectingHead && !source.parseHead) {
+    throw new Error(`adapter "${source.name}" does not support head selection`);
+  }
+  const events = selectingHead
+    ? source.parseHead!(filePath, opts.head!)
+    : source.parse(filePath);
+  for await (const ev of events) {
     if (ev.type === "session_start") {
       if (opts.cwdFilter && !ev.cwd.toLowerCase().includes(opts.cwdFilter.toLowerCase())) return;
       if (ev.timestamp && opts.since && new Date(ev.timestamp) < opts.since) return;
