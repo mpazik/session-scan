@@ -7,6 +7,7 @@
 
 export { filter, hasFilters } from "./filter.js";
 export type { FilterCriteria } from "./filter.js";
+export { selectLastTurns } from "./select-last-turns.js";
 
 export { trim, hasTrim } from "./trim.js";
 export type { TrimOptions } from "./trim.js";

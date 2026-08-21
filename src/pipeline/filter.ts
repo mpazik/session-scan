@@ -8,6 +8,7 @@
 
 import type { ContextualEvent } from "../scanner.js";
 import { selectBySkillInvocation } from "./select-skill.js";
+import { selectLastTurns } from "./select-last-turns.js";
 
 export interface FilterCriteria {
   /** Keep sessions invoking any of these exact skill names (`--skill`). */
@@ -18,8 +19,12 @@ export interface FilterCriteria {
   roles?: ("user" | "assistant" | "tool_result")[];
   /** Keep only events involving these normalized tool names (`--tool`). */
   tools?: string[];
+  /** Keep only the final N user-started turns (`--last-turns`). */
+  lastTurns?: number;
   /** Keep only errored tool results (`--error`). */
   error?: boolean;
+  /** Filter tool results without dropping other event types (`--tool-results`). */
+  toolResults?: "errors";
 }
 
 const ROLE_TO_TYPE: Record<string, string> = {
@@ -35,7 +40,9 @@ export function hasFilters(c: FilterCriteria): boolean {
     c.types?.length ||
     c.roles?.length ||
     c.tools?.length ||
-    c.error
+    c.lastTurns !== undefined ||
+    c.error ||
+    c.toolResults
   );
 }
 
@@ -46,7 +53,11 @@ export function filter(
   const selected = c.skills?.length
     ? selectBySkillInvocation(events, c.skills)
     : events;
-  return filterEvents(selected, c);
+  const windowed =
+    c.lastTurns !== undefined
+      ? selectLastTurns(selected, c.lastTurns)
+      : selected;
+  return filterEvents(windowed, c);
 }
 
 async function* filterEvents(
@@ -67,6 +78,9 @@ async function* filterEvents(
     if (typeSet && !typeSet.has(ev.type)) continue;
     if (roleSet && !roleSet.has(ev.type)) continue;
     if (c.error && !(ev.type === "tool_result" && ev.isError)) continue;
+    if (c.toolResults === "errors" && ev.type === "tool_result" && !ev.isError) {
+      continue;
+    }
     if (toolSet && !matchTool(ev, toolSet)) continue;
     yield ev;
   }

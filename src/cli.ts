@@ -18,7 +18,8 @@
  * Flags:
  *   locate    <input> | --cwd --since --until --source --include-subagents --adapter <path>...
  *   parse     --head <entry-id>              (requires one positional input)
- *   filter    --skill a,b  --type a,b  --tool a,b  --error  --role user|assistant|tool_result
+ *   filter    --skill a,b  --last-turns N  --type a,b  --tool a,b  --error
+ *             --tool-results errors  --role user|assistant|tool_result
  *   scanner   --scanner ./file.ts            (runs after filter, replaces trim)
  *   trim      --tool-lines N  --no-thinking  (default path only)
  *   render    --format md                    (ndjson default)
@@ -27,7 +28,7 @@
  * Examples:
  *   scan test/fixtures/pi.jsonl
  *   scan ~/.pi/agent/sessions/.../session.jsonl --head a1b2c3d4 --format md
- *   scan --cwd binder --format md --tool-lines 1 --no-thinking
+ *   scan --cwd binder --format md --last-turns 2 --tool-results errors --no-thinking
  *   session-scan --cwd journal --skill recruiter-replay --format md
  *   scan --cwd binder --format md --out-dir tmp/transcripts
  *   scan --cwd all --error --type tool_result --out tmp/errors.jsonl
@@ -58,10 +59,12 @@ const { values, positionals } = parseArgs({
     // parse
     head: { type: "string" },
     // filter
+    "last-turns": { type: "string" },
     type: { type: "string" },
     tool: { type: "string" },
     skill: { type: "string" },
     error: { type: "boolean", default: false },
+    "tool-results": { type: "string" },
     role: { type: "string" },
     // scanner
     scanner: { type: "string" },
@@ -86,6 +89,16 @@ if (values.head !== undefined) {
   if (!head || head === "null") {
     throw new Error("--head requires a non-empty, non-null entry ID");
   }
+}
+
+const lastTurns = parsePositiveInteger(values["last-turns"], "--last-turns");
+const toolResults = values["tool-results"];
+if (
+  toolResults !== undefined &&
+  toolResults !== "errors" &&
+  toolResults !== "all"
+) {
+  throw new Error('--tool-results must be "all" or "errors"');
 }
 
 // Load adapters: built-in + user + --adapter, plus the bundled pi reference
@@ -134,9 +147,11 @@ const roles = values.role
 
 const filter: FilterCriteria = {
   skills: values.skill?.split(",").map((s) => s.trim()).filter(Boolean),
+  lastTurns,
   types: values.type?.split(",").map((s) => s.trim()),
   tools: values.tool?.split(",").map((s) => s.trim()),
   error: values.error,
+  toolResults: toolResults === "errors" ? "errors" : undefined,
   roles,
 };
 
@@ -182,3 +197,18 @@ const elapsed = ((performance.now() - t0) / 1000).toFixed(2);
 console.error(
   `scanned ${stats.sessionsFound} sessions, wrote ${stats.sessionsWritten} (${stats.eventsWritten} events) in ${elapsed}s`,
 );
+
+function parsePositiveInteger(
+  value: string | undefined,
+  flag: string,
+): number | undefined {
+  if (value === undefined) return undefined;
+  if (!/^[1-9]\d*$/.test(value)) {
+    throw new Error(`${flag} requires a positive integer`);
+  }
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed)) {
+    throw new Error(`${flag} requires a positive integer`);
+  }
+  return parsed;
+}

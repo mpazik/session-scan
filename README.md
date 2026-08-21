@@ -6,6 +6,7 @@ Mine the session logs your coding agents already write. One command, `session-sc
 bun src/cli.ts test/fixtures/pi.jsonl                 # normalize one file to NDJSON
 bun src/cli.ts --cwd binder --format md               # readable transcripts of recent sessions
 bun src/cli.ts --cwd all --error --type tool_result   # every tool failure, last 7 days
+bun src/cli.ts FILE --last-turns 2 --tool-results errors --format md
 ```
 
 ## Why
@@ -25,7 +26,8 @@ session-scan <input | discover-flags>
   → locate          --cwd / --since / --until / --source / --adapter
   → adapter parse   auto-detect harness / --head <entry-id> → canonical SessionEvent
   → withContext     always on: turn / prevTurn / active model
-  → filter          --skill / --type / --tool / --error / --role  (default: keep all)
+  → filter          --skill / --last-turns / --type / --tool / --error /
+                    --tool-results / --role  (default: keep all)
   → [scanner]       --scanner ./file.ts                    (optional, replaces trim)
   → trim            --tool-lines N / --no-thinking         (default: full payloads)
   → render          ndjson (default) | --format md
@@ -47,7 +49,9 @@ Sessions are flattened into one output stream; every NDJSON line carries a `sid`
 | `--adapter <path>` (repeatable) | locate | built-ins + `~/.session-scan/adapters/` |
 | `--head <entry-id>` | parse | complete session |
 | `--skill <name[,name...]>` | filter | keep all sessions |
+| `--last-turns N` | filter | complete session |
 | `--type a,b` / `--tool a,b` / `--error` / `--role r` | filter | keep all events |
+| `--tool-results all\|errors` | filter | `all` |
 | `--scanner <path>` | scanner | none |
 | `--tool-lines N` / `--no-thinking` | trim | full payloads |
 | `--format md` | render | ndjson |
@@ -56,6 +60,10 @@ Sessions are flattened into one output stream; every NDJSON line carries a `sid`
 `--head` requires one positional session file and selects the native history ending at that entry, inclusively. Pi accepts native `id` values and Claude Code accepts native `uuid` values. Tree adapters emit only the selected entry's ancestor branch, so sibling branches and entries appended after the head are excluded. Codex and Claude text exports currently reject head selection rather than returning the full session.
 
 `--skill` selects complete transcripts containing a canonical `skill_invocation` event. Names are exact and case-sensitive. Comma-separated names use OR semantics. This session criterion combines with event filters using AND, but it does not remove the surrounding conversation. Normalization is adapter-owned: Pi maps its injected `<skill ...>` user envelope, while Claude Code and Codex map a dedicated `Skill` tool call when the host records one. Available-skill catalogs and incidental `SKILL.md` reads do not count.
+
+`--last-turns N` keeps the final N turns after head selection. A turn starts with a `user_message` and includes all following assistant messages, tool results, and other events until the next user message. The session header remains; preamble events before the first user message do not belong to a turn.
+
+`--tool-results errors` drops successful tool results without dropping user messages, assistant messages, or other event types. This differs from `--error`, which keeps only failed tool results. `--tool-results all` is the default.
 
 Filter values: `--type` takes event types (`user_message`, `assistant_message`, `skill_invocation`, `tool_result`, `compaction`, `error`, `custom_message`), `--tool` takes normalized tool names (`terminal`, `file_read`, `file_edit`, ...), `--role` takes `user` / `assistant` / `tool_result`. Event filter criteria combine with AND.
 
@@ -68,11 +76,16 @@ bun src/cli.ts test/fixtures/pi.jsonl
 # readable transcript of recent binder sessions, slim
 bun src/cli.ts --cwd binder --format md --tool-lines 1 --no-thinking
 
-# reproduce the Pi branch active when the latest feedback was recorded
+# reproduce a focused Pi branch for feedback review
 record=$(tail -n 1 ~/.pi/agent/feedback.jsonl)
 sessionFile=$(jq -r .sessionFile <<<"$record")
 headId=$(jq -r .leafId <<<"$record")
-session-scan "$sessionFile" --head "$headId" --format md
+session-scan "$sessionFile" \
+  --head "$headId" \
+  --last-turns 2 \
+  --no-thinking \
+  --tool-results errors \
+  --format md
 
 # full transcripts where a skill was invoked
 session-scan --cwd journal --skill recruiter-replay --format md
