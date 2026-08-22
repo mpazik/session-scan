@@ -1,6 +1,11 @@
 {
   "name": "session-scan",
-  "module": "index.ts",
+  "version": "0.1.0",
+  "module": "./src/index.ts",
+  "exports": "./src/index.ts",
+  "bin": {
+    "session-scan": "./src/cli.ts"
+  },
   "type": "module",
   "scripts": {
     "test": "bun test src test/integration"

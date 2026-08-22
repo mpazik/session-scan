@@ -360,11 +360,23 @@ function looksLikeError(content: string): boolean {
 // -- tool-call parsing -------------------------------------------------------
 
 /** Parse `⏺ Name(args…)`, joining args that wrapped onto continuation lines. */
+// Known Claude Code tool-call labels (and a permissive single-token fallback).
+// The label must sit flush against `(` with no space, which keeps prose that
+// merely contains parentheses ("varchar(191)", "passed (12 tests)") out.
+const TOOL_LABEL = new Set([
+  "bash", "read", "write", "edit", "update", "multiedit", "glob", "grep",
+  "search", "task", "fetch", "webfetch", "websearch", "web search", "agent",
+  "notebookedit", "todowrite", "bashoutput", "killshell",
+]);
+
 function parseToolCall(lines: string[], nextId: () => string): ToolCall | null {
   const head = (lines[0] ?? "").replace(/^⏺ ?/, "");
-  const m = head.match(/^([A-Za-z][\w ]*?)\((.*)$/);
+  const m = head.match(/^([A-Z][A-Za-z0-9]*(?: [A-Z][A-Za-z0-9]*)*)\((.*)$/);
   if (!m) return null;
   const name = (m[1] ?? "").trim();
+  // Unknown labels must be a single PascalCase token. Multi-word labels are
+  // accepted only when explicitly listed above.
+  if (!TOOL_LABEL.has(name.toLowerCase()) && !/^[A-Z][a-z]+([A-Z][a-z]+)*$/.test(name)) return null;
   // Join continuation lines (commands/paths wrap mid-token).
   const rest = [m[2], ...lines.slice(1).map((l) => l.trim())].join(" ");
   let argRaw = rest.replace(/\)\s*$/, "").replace(/…\s*$/, "").trim();

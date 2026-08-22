@@ -40,8 +40,16 @@ export type {
   DiscoverSpec,
 } from "./parser/index.js";
 
+// High-level API
+export { scanSession } from "./api.js";
+export type { ScanSessionOptions } from "./api.js";
+
 // Context enrichment
 export { withContext } from "./context.js";
+
+// Pipeline stages
+export { filter, selectLastTurns, trim } from "./pipeline/index.js";
+export type { FilterCriteria, TrimOptions } from "./pipeline/index.js";
 
 // Utilities
 export { truncate, truncLine, stripAnsi } from "./lib/string.js";

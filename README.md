@@ -9,6 +9,20 @@ bun src/cli.ts --cwd all --error --type tool_result   # every tool failure, last
 bun src/cli.ts FILE --last-turns 2 --tool-results errors --format md
 ```
 
+## Install the local CLI
+
+The package is private and is not available from a registry. From its checkout, install it globally with Bun:
+
+```bash
+bun add --global .
+```
+
+The package exposes `src/cli.ts` as the `session-scan` binary. Bun links it into the global binary directory, normally `~/.bun/bin`, which must be on `PATH`.
+
+```bash
+session-scan FILE --last-turns 2 --format md
+```
+
 ## Why
 
 Agents like Claude Code and Codex log every session to disk: every prompt, response, tool call, token count, and error. The data is already there; it's just locked in per-harness formats. session-scan parses those formats into one event model so you can grep it, diff it, feed it to DuckDB, or pipe it to an LLM.
@@ -37,6 +51,24 @@ session-scan <input | discover-flags>
 Default behavior is faithful normalization. Every reduction is opt-in. `session-scan <file>` with no flags emits the full canonical event stream as lossless NDJSON.
 
 Sessions are flattened into one output stream; every NDJSON line carries a `sid` field so sessions stay separable downstream.
+
+## Programmatic API
+
+Use `scanSession` when another Bun application needs canonical events without spawning the CLI or serializing NDJSON:
+
+```ts
+import { scanSession } from "session-scan";
+
+for await (const event of scanSession(file, {
+  head: leafId,
+  filter: { lastTurns: 2, toolResults: "errors" },
+  trim: { noThinking: true },
+})) {
+  // Consume canonical contextual events.
+}
+```
+
+The API performs adapter discovery, native head selection, contextual enrichment, filtering, and trimming. Lower-level parser and pipeline stages are also exported for custom compositions.
 
 ## Flags
 
