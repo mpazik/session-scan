@@ -1,37 +1,53 @@
-/**
- * Sink stage. Dumb byte writers over a rendered string stream. Per-session
- * splitting (`--out-dir`) is runner-level: the runner opens one file sink per
- * session. Render already terminated each chunk, so sinks write verbatim.
- */
-
-import { mkdir } from "fs/promises";
-import { dirname } from "path";
+/** Byte writers. The runner owns session splitting and sink lifetime. */
+import { mkdir, open } from "node:fs/promises";
+import { dirname } from "node:path";
+import { setImmediate } from "node:timers/promises";
 
 export interface Sink {
-  write(s: string): void;
+  write(s: string): Promise<void>;
   close(): Promise<void>;
 }
 
-/** Stream to stdout. Sessions concatenate. */
+/** Wait for each write to finish, bounding buffering even on slow pipes. */
 export function stdoutSink(): Sink {
+  const output = process.stdout;
+  let failure: Error | undefined;
+  let closed = false;
+  const onError = (error: Error): void => { failure ??= error; };
+  output.on("error", onError);
   return {
-    write(s) {
-      process.stdout.write(s);
+    async write(s) {
+      if (failure) throw failure;
+      if (closed) throw new Error("Sink is closed");
+      await new Promise<void>((resolve, reject) => {
+        output.write(s, (error) => error ? reject(error) : resolve());
+      });
     },
-    async close() {},
+    async close() {
+      if (closed) return;
+      closed = true;
+      // A failed write callback can precede the stream's error event.
+      await setImmediate();
+      output.off("error", onError);
+      if (failure) throw failure;
+    },
   };
 }
 
-/** Stream to a single file, creating parent dirs. */
+/** Exclusively create a file. Existing files and symlinks are never followed. */
 export async function openFileSink(path: string): Promise<Sink> {
   await mkdir(dirname(path), { recursive: true });
-  const writer = Bun.file(path).writer();
+  const file = await open(path, "wx");
+  let closed = false;
   return {
-    write(s) {
-      writer.write(s);
+    async write(s) {
+      if (closed) throw new Error("Sink is closed");
+      await file.writeFile(s, "utf8");
     },
     async close() {
-      await writer.end();
+      if (closed) return;
+      closed = true;
+      await file.close();
     },
   };
 }
