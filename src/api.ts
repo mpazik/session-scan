@@ -28,7 +28,7 @@ export async function* scanSession(
   file: string,
   options: ScanSessionOptions = {},
 ): AsyncGenerator<ContextualEvent> {
-  const piReferenceAdapter = resolve(import.meta.dir, "../examples/adapters/pi.ts");
+  const piReferenceAdapter = resolve(import.meta.dirname, `../examples/adapters/pi.${import.meta.url.endsWith(".ts") ? "ts" : "js"}`);
   await discoverAdapters({
     extra: [piReferenceAdapter, ...(options.adapters ?? [])],
   });

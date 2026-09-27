@@ -5,7 +5,9 @@ import { resolve, join } from "node:path";
 import { spawn } from "node:child_process";
 import { version } from "../../package.json";
 
-const cli = resolve(import.meta.dir, "../../src/cli.ts");
+const built = process.env.SESSION_SCAN_TEST_BUILT === "1";
+const runtime = built ? "node" : process.execPath;
+const cli = resolve(import.meta.dir, built ? "../../dist/src/cli.js" : "../../src/cli.ts");
 const fixture = resolve(import.meta.dir, "../fixtures/pi.jsonl");
 
 async function workspace<T>(action: (dir: string) => Promise<T>): Promise<T> {
@@ -15,7 +17,7 @@ async function workspace<T>(action: (dir: string) => Promise<T>): Promise<T> {
 }
 
 async function invoke(dir: string, args: string[]) {
-  const child = Bun.spawn([process.execPath, cli, ...args], {
+  const child = Bun.spawn([runtime, cli, ...args], {
     cwd: dir, env: { ...process.env, HOME: dir, BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0" },
     stdout: "pipe", stderr: "pipe",
   });
@@ -150,7 +152,7 @@ test("scanner errors named EPIPE are not mistaken for stdout closure", async () 
 test("closing the downstream pipe is a quiet successful CLI termination", async () => {
   await workspace(async (dir) => {
     await writeFile(join(dir, "scanner.ts"), 'export default async function* () { for (let i = 0; i < 10000; i++) yield {type: "custom_message", customType: "bulk", content: "x".repeat(8192)}; }');
-    const child = spawn(process.execPath, [cli, fixture, "--scanner", "scanner.ts"], {
+    const child = spawn(runtime, [cli, fixture, "--scanner", "scanner.ts"], {
       cwd: dir, env: { ...process.env, HOME: dir }, stdio: ["ignore", "pipe", "pipe"],
     });
     let stderr = "";

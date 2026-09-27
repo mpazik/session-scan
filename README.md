@@ -19,11 +19,7 @@
 - **Analyze across agents.** Feed one event format into your own scripts or queries instead of parsing each harness separately.
 - **Review skill use.** Find conversations where a particular skill was explicitly invoked, with surrounding context.
 
-**Experimental.** Keep your original logs: normalization is not lossless, and output is not a backup or replay format. Logs may contain credentials and private code; there is no automatic redaction.
-
 ## Install
-
-Requires [Node.js](https://nodejs.org).
 
 ```bash
 npm install --global session-scan
@@ -45,8 +41,6 @@ session-scan --cwd all --error --format md
 session-scan /path/to/session.jsonl \
   --last-turns 2 --tool-results errors --no-thinking --format md
 ```
-
-Inspect the output before sharing it or sending it to another agent.
 
 ### Work with one format across agents
 
@@ -89,18 +83,6 @@ Without a positional file, discovery defaults to the current project name and th
 | **Pi JSONL** | Text, tools, usage, compaction, and selected custom records. Does not retain assistant thinking blocks or non-text blocks. Skips branch summaries, labels, and unsupported entries. |
 | **Claude Code text export** | Best-effort reconstruction of visible transcript text. Cannot recover hidden thinking, usage, truncated payloads, native tool IDs, or per-event timestamps. Pairing and paragraph unwrapping are heuristic. Prefer native JSONL. |
 
-Unknown or newly introduced harness records may be omitted. Missing output does not prove something was absent from the session. Token usage is not an authoritative billing report. Some adapters and selectors buffer session data, so large logs can consume substantial memory.
-
-Once a JSON adapter is selected, malformed JSON stops parsing with a file and line diagnostic; already emitted records remain in the output. A syntactically valid but incomplete final record is ignored so logs can be read while an agent is still writing them.
-
-## Privacy and trust
-
-**There is no automatic secret redaction.** Logs and output can contain source code, prompts, credentials, personal data, tool output, local paths, and repository URLs. Inspect them before sharing, committing, or piping them to a hosted service or model.
-
-Filters and trimming are not a privacy boundary. A matching assistant event can retain other tool calls and arguments. `--no-thinking` and `--tool-lines` only reduce selected payloads.
-
-Custom adapters and scanners execute code with your permissions. Only load modules you trust, including those automatically loaded from `~/.session-scan/adapters/`.
-
 ## Node.js library
 
 Install in your project:
@@ -130,7 +112,14 @@ for await (const event of scanSession("/path/to/session.jsonl", {
 
 Load another adapter with `--adapter <path>`. Use `--scanner <path>` for a custom async generator over one session's filtered events. Scanners replace the trim stage and own their output: `--no-thinking` and `--tool-lines` do not trim scanner results.
 
-Library and scanner context can reference events excluded by filters. Rendered NDJSON omits that in-memory context. Do not treat filtered contextual objects as sanitized data.
+## Development
+
+Install [Bun](https://bun.sh), then run:
+
+```bash
+bun install --frozen-lockfile
+bun run check
+```
 
 ## License
 

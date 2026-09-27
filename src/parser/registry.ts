@@ -20,7 +20,7 @@ import { readFirstJsonValue } from "./read-lines.js";
 const registry = new Map<string, Adapter>();
 let discovered = false;
 
-const BUILTIN_DIR = join(import.meta.dir, "..", "adapters");
+const BUILTIN_DIR = join(import.meta.dirname, "..", "adapters");
 const USER_DIR = join(process.env.HOME || "~", ".session-scan", "adapters");
 
 // ---------------------------------------------------------------------------
@@ -89,7 +89,7 @@ async function loadDir(dir: string): Promise<void> {
     return; // directory doesn't exist
   }
   for (const file of files) {
-    if (!file.endsWith(".ts") && !file.endsWith(".js")) continue;
+    if (file.endsWith(".d.ts") || (!file.endsWith(".ts") && !file.endsWith(".js"))) continue;
     await loadAdapterFile(join(dir, file));
   }
 }

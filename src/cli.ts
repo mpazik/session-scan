@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env node
 
 /**
  * scan - one command over the canonical session event stream.
@@ -46,7 +46,8 @@ import {
 import { loadScanner } from "./pipeline/index.js";
 import { run, type SinkConfig } from "./runner.js";
 import type { FilterCriteria } from "./pipeline/index.js";
-import { version } from "../package.json";
+import manifest from "../package.json" with { type: "json" };
+import { isStdoutFailure } from "./pipeline/sink.js";
 
 const HELP = `Usage: session-scan [input] [options]
 
@@ -97,7 +98,10 @@ try {
 } catch (error) {
   // Only a broken pipe observed on stdout is a normal downstream close.
   // An adapter/scanner/file error with the same code must still fail.
-  if (!stdoutError || error !== stdoutError) reportError(error);
+  if (!(isStdoutFailure(error) && isClosedPipe(error)) &&
+      !(error === stdoutError && stdoutError && isClosedPipe(stdoutError))) {
+    reportError(error);
+  }
 }
 
 function isClosedPipe(error: NodeJS.ErrnoException): boolean {
@@ -161,7 +165,7 @@ async function main(): Promise<void> {
     return;
   }
   if (values.version) {
-    process.stdout.write(`${version}\n`);
+    process.stdout.write(`${manifest.version}\n`);
     return;
   }
 
@@ -215,7 +219,7 @@ async function main(): Promise<void> {
 
   // Load adapters: built-in + user + --adapter, plus the bundled pi reference
   // adapter so its files auto-detect (pi is not built in).
-  const piRef = resolve(import.meta.dir, "../examples/adapters/pi.ts");
+  const piRef = resolve(import.meta.dirname, `../examples/adapters/pi.${import.meta.url.endsWith(".ts") ? "ts" : "js"}`);
   await discoverAdapters({ extra: [piRef] });
   for (const path of values.adapter ?? []) {
     if (!(await loadAdapterFile(path))) {

@@ -8,19 +8,39 @@ export interface Sink {
   close(): Promise<void>;
 }
 
+const stdoutFailures = new WeakSet<Error>();
+
+/** Identify errors from stdout writes, not matching codes thrown by scanners. */
+export function isStdoutFailure(error: unknown): error is Error & { code?: string } {
+  return error instanceof Error && stdoutFailures.has(error);
+}
+
 /** Wait for each write to finish, bounding buffering even on slow pipes. */
 export function stdoutSink(): Sink {
   const output = process.stdout;
   let failure: Error | undefined;
   let closed = false;
-  const onError = (error: Error): void => { failure ??= error; };
+  const onError = (error: Error): void => {
+    stdoutFailures.add(error);
+    failure ??= error;
+  };
   output.on("error", onError);
   return {
     async write(s) {
       if (failure) throw failure;
       if (closed) throw new Error("Sink is closed");
       await new Promise<void>((resolve, reject) => {
-        output.write(s, (error) => error ? reject(error) : resolve());
+        try {
+          output.write(s, (error) => {
+            if (error) {
+              onError(error);
+              reject(error);
+            } else resolve();
+          });
+        } catch (error) {
+          if (error instanceof Error) onError(error);
+          reject(error);
+        }
       });
     },
     async close() {

@@ -2,28 +2,35 @@
   "name": "session-scan",
   "version": "0.1.0",
   "license": "MIT",
-  "module": "./src/index.ts",
-  "exports": "./src/index.ts",
+  "description": "Read, filter, and export coding-agent sessions",
+  "types": "./dist/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "import": "./dist/src/index.js"
+    }
+  },
+  "engines": {
+    "node": ">=22.18.0"
+  },
   "bin": {
-    "session-scan": "./src/cli.ts"
+    "session-scan": "./dist/src/cli.js"
   },
   "type": "module",
   "files": [
-    "src/**/*.ts",
-    "!src/**/*.test.ts",
-    "examples/adapters/pi.ts"
+    "dist"
   ],
   "scripts": {
+    "build": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.build.json",
+    "prepack": "npm run build",
     "test": "bun test src test/integration",
     "typecheck": "tsc --noEmit",
     "test:package": "bun scripts/package-smoke.ts",
-    "check": "bun run typecheck && bun run test && bun run test:package"
+    "test:node": "bun run build && SESSION_SCAN_TEST_BUILT=1 bun test test/integration/cli.test.ts",
+    "check": "bun run typecheck && bun run test && bun run test:node && bun run test:package"
   },
-  "private": true,
   "devDependencies": {
-    "@types/bun": "latest"
-  },
-  "peerDependencies": {
-    "typescript": "^5"
+    "@types/bun": "1.4.2",
+    "typescript": "7.0.2"
   }
 }
