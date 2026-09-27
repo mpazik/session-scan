@@ -27,6 +27,17 @@ npm install --global session-scan
 
 ## Examples
 
+### Find where you had to correct the agent
+
+Use [Jev](https://docs.typesafe.ai/introduction) to flag your corrections, repeated instructions, and explicit frustration, even when every tool call succeeded. From a repository checkout, with `TYPESAFE_API_KEY` loaded:
+
+```bash
+bun src/cli.ts /path/to/session.jsonl --last-turns 10 \
+  --scanner ./examples/scanners/jev-corrections.ts
+```
+
+This optional scanner makes paid API calls and shares selected message text with TypeSafe. Read the [setup and data-sharing details](examples/scanners/jev-corrections.md) first. Findings include probabilities and session IDs for review; they are not proof that the agent was wrong.
+
 ### Investigate what failed
 
 ```bash
