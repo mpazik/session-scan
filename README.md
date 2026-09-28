@@ -1,5 +1,5 @@
 <p align="center">
-  <img src=".github/assets/banner-sticker.png" alt="Session Scan" width="720">
+  <img src=".github/assets/banner-sticker.png" alt="Session Scan" width="360">
 </p>
 
 <h1 align="center">Session Scan</h1>
