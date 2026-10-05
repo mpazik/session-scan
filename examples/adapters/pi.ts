@@ -106,7 +106,14 @@ export default {
         const msg = raw.message;
         if (!msg) continue;
 
-        if (msg.role === "user") {
+        if (msg.role === "system") {
+          // System messages patch prompt sections by name; only a patch that
+          // sets or removes project_context changes the instruction files.
+          const sections = msg.sections;
+          if (sections && typeof sections === "object" && "project_context" in sections) {
+            yield* hold(instructionFilesEvent(id, parentId, timestamp, sections.project_context));
+          }
+        } else if (msg.role === "user") {
           const text = joinTextBlocks(msg.content);
           yield* out({ type: "user_message", id, parentId, text, timestamp });
           const skill = parsePiSkillInvocation(text);
@@ -152,6 +159,11 @@ export default {
 
       if (raw.type === "compaction") {
         yield* out({ type: "compaction", id, parentId, summary: String(raw.summary ?? "") || undefined, tokensBefore: Number(raw.tokensBefore ?? 0) || undefined, timestamp });
+        // The checkpoint replaces the whole prompt, so an absent section means none.
+        const sections = raw.systemMessage?.sections;
+        if (sections && typeof sections === "object") {
+          yield* out(instructionFilesEvent(`${id}:instructions`, id, timestamp, sections.project_context));
+        }
       } else if (raw.type === "model_change") {
         if (start && !start.model && raw.modelId) start.model = String(raw.modelId);
         yield* hold({ type: "custom_message", id, parentId, customType: "model_change", content: `${raw.provider ?? ""}/${raw.modelId ?? ""}`, timestamp });
@@ -225,6 +237,22 @@ async function* readPiHeadValues(
   }
   for (const header of headers) yield header;
   yield* selectHeadPath(entries, headId);
+}
+
+/**
+ * Instruction files loaded into the prompt, from Pi's `project_context`
+ * section. Content is the complete list in effect from this event onward.
+ */
+function instructionFilesEvent(
+  id: string,
+  parentId: string | null,
+  timestamp: string,
+  projectContext: unknown,
+): SessionEvent {
+  const paths = typeof projectContext === "string"
+    ? [...projectContext.matchAll(/<project_instructions path="([^"]*)">/g)].map((m) => m[1]!)
+    : [];
+  return { type: "custom_message", id, parentId, customType: "instruction_files", content: paths, timestamp };
 }
 
 /** Pi injects invoked skill content as a leading XML-like user envelope. */

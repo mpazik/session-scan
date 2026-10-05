@@ -91,7 +91,7 @@ Without a positional file, discovery defaults to the current project name and th
 |---|---|
 | **Claude Code JSONL** | Text, recorded thinking, tool calls/results, usage, and selected errors and compaction records. Drops machinery, some injected messages, and unsupported non-text blocks. Separate subagent transcripts require `--include-subagents`. |
 | **Codex rollout JSONL** | Text, tools, reasoning summaries, usage, and selected lifecycle events. Omits injected instructions, coalesces response items, and synthesizes event IDs. Usage is associated by response order; tool classification and failure detection include heuristics. |
-| **Pi JSONL** | Text, tools, usage, compaction, and selected custom records. Does not retain assistant thinking blocks or non-text blocks. Skips branch summaries, labels, and unsupported entries. |
+| **Pi JSONL** | Text, tools, usage, compaction, selected custom records, and loaded instruction file paths. Does not retain assistant thinking blocks or non-text blocks. Skips branch summaries, labels, and unsupported entries. |
 | **Claude Code text export** | Best-effort reconstruction of visible transcript text. Cannot recover hidden thinking, usage, truncated payloads, native tool IDs, or per-event timestamps. Pairing and paragraph unwrapping are heuristic. Prefer native JSONL. |
 
 ## Node.js library

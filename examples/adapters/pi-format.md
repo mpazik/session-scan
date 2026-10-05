@@ -22,13 +22,10 @@ The directory name encodes the cwd: `/Users/foo/src/bar` becomes `--Users-foo-sr
 
 The `id`/`parentId` fields form a tree (not a flat list). Branching creates siblings under the same parent. These native entry IDs are accepted by `session-scan --head <entry-id>`.
 
-Pi feedback records retain the active branch head as `leafId` and the source log as `sessionFile`. Although that field remains named `leafId`, the entry can gain descendants later. Pass it as the session-scan head to reproduce the history active when feedback was recorded:
+Pass any entry ID as the session-scan head to reproduce the history up to that entry:
 
 ```bash
-record=$(tail -n 1 ~/.pi/agent/feedback.jsonl)
-sessionFile=$(jq -r .sessionFile <<<"$record")
-headId=$(jq -r .leafId <<<"$record")
-session-scan "$sessionFile" --head "$headId" --format md
+session-scan "$sessionFile" --head "$entryId" --format md
 ```
 
 Selection includes the head and its native ancestors. It excludes sibling branches and later descendants. IDs of bookkeeping entries such as `custom`, `label`, or `branch_summary` are valid even when those entries do not map to canonical events.
@@ -44,6 +41,13 @@ Selection includes the head and its native ancestors. It excludes sibling branch
 ```
 
 ### message (wraps different roles)
+
+#### role: system
+```json
+{"type":"message", "id":"...", "parentId":"...", "timestamp":"...", "message":{"role":"system", "content":"", "sections":{"project_context":"<project_instructions path=\"/project/AGENTS.md\">\n...\n</project_instructions>"}, "toolsAdded":[], "timestamp":1234}}
+```
+
+System messages patch prompt sections by name; `null` removes a section. The reference adapter emits a `custom_message` with `customType:"instruction_files"` whenever a patch sets or removes `project_context`. Its `content` is the complete list of instruction file paths in effect from then on. Other sections are not emitted.
 
 #### role: user
 ```json
@@ -121,8 +125,11 @@ The `customType:"context"` entries are skill resolution results. The `details.it
   "summary":"...long markdown summary...",
   "tokensBefore":111262,
   "firstKeptEntryId":"48f5a22e",
-  "details":{"readFiles":[], "modifiedFiles":[]}}
+  "details":{"readFiles":[], "modifiedFiles":[]},
+  "systemMessage":{"role":"system", "content":"", "sections":{}, "timestamp":1234}}
 ```
+
+`systemMessage` is a complete prompt checkpoint. When it is present, the reference adapter emits an `instruction_files` event after the compaction, which is empty if the checkpoint has no `project_context`.
 
 ### branch_summary
 ```json
