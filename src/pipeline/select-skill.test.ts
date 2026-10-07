@@ -4,10 +4,10 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { withContext } from "../context.js";
 import type { ContextualEvent } from "../scanner.js";
-import type { SessionEvent, ToolCall } from "../session.js";
+import type { SessionEvent, SkillInvocationEvent, ToolCall } from "../session.js";
 import { skillInvocationFromClaudeTool } from "../adapters/claude-code.js";
 import { skillInvocationFromCodexTool } from "../adapters/codex.js";
-import { parsePiSkillInvocation } from "../../examples/adapters/pi.js";
+import piAdapter, { parsePiSkillInvocation } from "../../examples/adapters/pi.js";
 import { selectBySkillInvocation } from "./select-skill.js";
 
 const envelope = (name: string, location = `/skills/${name}/SKILL.md`) =>
@@ -195,6 +195,141 @@ test("CLI selects before filtering events and does not write non-matches", async
   }
 });
 
+test("Pi emits direct Skill attempts in order and preserves invocation arguments", async () => {
+  await assertPiSkills({
+    content: [
+      {
+        type: "toolCall", id: "s1", name: "Skill",
+        arguments: { name: "unslop", arguments: "draft.md" },
+      },
+      { type: "toolCall", id: "s2", name: "Skill", arguments: { name: "review" } },
+    ],
+    selectedSkill: "unslop",
+  }, {
+    invocations: [
+      {
+        type: "skill_invocation", id: "a1:skill:s1", parentId: "a1",
+        sourceEventId: "a1", timestamp: "2026-08-19T10:00:02.000Z",
+        name: "unslop", arguments: { arguments: "draft.md" },
+      },
+      {
+        type: "skill_invocation", id: "a1:skill:s2", parentId: "a1",
+        sourceEventId: "a1", timestamp: "2026-08-19T10:00:02.000Z",
+        name: "review",
+      },
+    ],
+    selected: true,
+  });
+});
+
+test("Pi direct Skill selection is case-sensitive even after a successful result", async () => {
+  await assertPiSkills({
+    content: [
+      { type: "toolCall", id: "s1", name: "Skill", arguments: { name: "unslop" } },
+    ],
+    result: { toolCallId: "s1", isError: false, content: "# Unslop" },
+    selectedSkill: "Unslop",
+  }, {
+    invocations: [{
+      type: "skill_invocation", id: "a1:skill:s1", parentId: "a1",
+      sourceEventId: "a1", timestamp: "2026-08-19T10:00:02.000Z",
+      name: "unslop",
+    }],
+    selected: false,
+  });
+});
+
+test("Pi records an invocation attempt even when the Skill result is an error", async () => {
+  await assertPiSkills({
+    content: [
+      { type: "toolCall", id: "s1", name: "Skill", arguments: { name: "unslop" } },
+    ],
+    result: { toolCallId: "s1", isError: true, content: "Skill not found" },
+    selectedSkill: "unslop",
+  }, {
+    invocations: [{
+      type: "skill_invocation", id: "a1:skill:s1", parentId: "a1",
+      sourceEventId: "a1", timestamp: "2026-08-19T10:00:02.000Z",
+      name: "unslop",
+    }],
+    selected: true,
+  });
+});
+
+test("Pi does not infer skill invocations from code, reads, mentions, or malformed calls", async () => {
+  await assertPiSkills({
+    content: [
+      {
+        type: "toolCall", id: "c1", name: "codemode",
+        arguments: { code: 'await tools.Skill({ name: "unslop" })' },
+      },
+      {
+        type: "toolCall", id: "r1", name: "read",
+        arguments: { path: "/skills/unslop/SKILL.md" },
+      },
+      { type: "text", text: 'Example: Skill({ name: "unslop" })' },
+      { type: "toolCall", id: "s1", name: "Skill", arguments: { name: "" } },
+      { type: "toolCall", id: "s2", name: "Skill", arguments: { name: 42 } },
+      { type: "toolCall", id: "s3", name: "Skill", arguments: '{"name":"unslop"}' },
+      { type: "toolCall", id: "s4", name: "Skill", arguments: null },
+      { type: "toolCall", id: "s5", name: "Skill", arguments: [] },
+      { type: "toolCall", id: "s6", name: "skill", arguments: { name: "unslop" } },
+    ],
+    selectedSkill: "unslop",
+  }, { invocations: [], selected: false });
+});
+
+async function assertPiSkills(
+  input: {
+    content: unknown[];
+    selectedSkill: string;
+    result?: { toolCallId: string; isError: boolean; content: string };
+  },
+  expected: { invocations: SkillInvocationEvent[]; selected: boolean },
+): Promise<void> {
+  const dir = await mkdtemp(join(tmpdir(), "session-scan-direct-skill-"));
+  const file = join(dir, "session.jsonl");
+  try {
+    let session = piSession("Please review this draft with unslop", input.content);
+    if (input.result) {
+      session += JSON.stringify({
+        type: "message", id: "r1", parentId: "a1",
+        timestamp: "2026-08-19T10:00:03.000Z",
+        message: { role: "toolResult", toolName: "Skill", ...input.result },
+      }) + "\n";
+    }
+    await writeFile(file, session);
+    const events: SessionEvent[] = [];
+    for await (const event of piAdapter.parse(file)) events.push(event);
+    expect(events.map((event) => event.type)).toEqual([
+      "session_start", "custom_message", "user_message", "assistant_message",
+      ...expected.invocations.map((event) => event.type),
+      ...(input.result ? ["tool_result" as const] : []),
+    ]);
+    expect(events.filter((event) => event.type === "skill_invocation"))
+      .toEqual(expected.invocations);
+
+    const result = await runCli([
+      file, "--skill", input.selectedSkill, "--type", "skill_invocation",
+    ]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toContain(`scanned 1 sessions, wrote ${expected.selected ? 1 : 0}`);
+    const selectedEvents = result.stdout.trim()
+      ? result.stdout.trim().split("\n").map((line) => JSON.parse(line))
+      : [];
+    expect(selectedEvents).toEqual(expected.selected ? [
+      {
+        type: "session_start", formatVersion: 1, agent: "pi", id: "skill-test",
+        sid: "skill-test", timestamp: "2026-08-19T10:00:00.000Z",
+        cwd: "/tmp/project", path: file, model: "test-model",
+      },
+      ...expected.invocations.map((event) => ({ ...event, sid: "skill-test" })),
+    ] : []);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
 function sessionEvents(skillText: string): SessionEvent[] {
   const events: SessionEvent[] = [
     {
@@ -271,7 +406,7 @@ function stripContext(event: ContextualEvent): SessionEvent {
   return raw as SessionEvent;
 }
 
-function piSession(skillText: string): string {
+function piSession(skillText: string, assistantContent: unknown[] = []): string {
   const values = [
     {
       type: "session",
@@ -302,7 +437,7 @@ function piSession(skillText: string): string {
       timestamp: "2026-08-19T10:00:02.000Z",
       message: {
         role: "assistant",
-        content: [{ type: "text", text: "I can help" }],
+        content: [{ type: "text", text: "I can help" }, ...assistantContent],
         provider: "test",
         model: "test-model",
       },

@@ -147,6 +147,19 @@ export default {
             usage: extractUsage(msg.usage),
             timestamp,
           });
+          for (let i = 0; i < toolCalls.length; i++) {
+            const call = toolCalls[i]!;
+            const skill = skillInvocationFromPiTool(call);
+            if (!skill) continue;
+            yield* out({
+              type: "skill_invocation",
+              id: `${id}:skill:${call.id || i}`,
+              parentId: id,
+              timestamp,
+              sourceEventId: id,
+              ...skill,
+            });
+          }
         } else if (msg.role === "toolResult") {
           yield* out({ type: "tool_result", id, parentId, toolCallId: msg.toolCallId ?? "", toolName: msg.toolName ?? "", content: joinTextBlocks(msg.content ?? []), isError: msg.isError === true, timestamp });
         } else if (msg.role === "bashExecution") {
@@ -253,6 +266,23 @@ function instructionFilesEvent(
     ? [...projectContext.matchAll(/<project_instructions path="([^"]*)">/g)].map((m) => m[1]!)
     : [];
   return { type: "custom_message", id, parentId, customType: "instruction_files", content: paths, timestamp };
+}
+
+function skillInvocationFromPiTool(
+  call: ToolCall,
+): Pick<SkillInvocationEvent, "name" | "arguments"> | null {
+  if (call.name !== "Skill") return null;
+  if (
+    !call.arguments ||
+    typeof call.arguments !== "object" ||
+    Array.isArray(call.arguments)
+  ) return null;
+  const { name, ...args } = call.arguments;
+  if (typeof name !== "string" || !name) return null;
+  return {
+    name,
+    ...(Object.keys(args).length > 0 ? { arguments: args } : {}),
+  };
 }
 
 /** Pi injects invoked skill content as a leading XML-like user envelope. */
